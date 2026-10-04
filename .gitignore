@@ -1,0 +1,21 @@
+# Manuales del fabricante: documento confidencial, no se publican
+documentacion/*.pdf
+documentacion/*.zip
+
+# Secretos y configuracion local
+.env
+*.key
+*.pem
+secrets/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Datos locales
+*.db
+*.db-wal
+*.db-shm

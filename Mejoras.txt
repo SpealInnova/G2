@@ -1,0 +1,24 @@
+Hablemos de la arquitectura de este nuevo analizador. La base es, con base en la lectura de los sensores, transmitir a la plataforma sp-peek.com, almacenar en una base de datos interna, activar alarmas y generar reportes de lecturas. Entonces, comencemos por lo básico, lo que tengo pensado para esta nueva versión es lo siguiente:
+
+* Estado de conexión a internet con pantalla para conectarse a cualquier red con usuario y contraseña desde pantalla Nextion.
+* Conocer la ip asignada por DHCP.
+* Deshabilitar sensores desde la pantalla Nextion y desde la plataforma.
+* Seleccionar cada cuánto se almacenan los datos en la base de datos desde Pantalla Nextion y desde plataforma web.
+* Seleccionar cada cuánto se visualizan los datos en la pantalla Nextion y en la plataforma web.
+* En caso de perder la conexión a internet, el dispositivo podrá migrar los datos almacenados en la base de datos durante el corten de conexión a la base de datos web.
+* Calibrar tanto desde pantalla como plataforma web.
+* Diagnóstico remoto desde la plataforma o plataforma.
+* Sensores periféricos (temperatura, humedad, hpa, vibración)
+* Salida de sonido para avisos de alarmas o navegación de pantalla Nextion.
+* Procesos descentralizados.
+* Cola local persistente para reenvío sin pérdida.
+* Consultas parametrizadas y política de retención de datos.
+* Reporte de reinicios.
+* Estado de base de datos interna, cantidad de registros y datos almacenados.
+
+
+El objetivo
+
+Crear un sistema estable, que entregue los datos de forma confiable y sincronizada, que sea del mínimo consumo eléctrico posible, que gestione los posibles errores y los reporte, que sea configurable desde la pantalla Nextion y desde la plataforma web y que tenga un estado offline.
+
+Qué otras sugerencias harías en cuanto al software para crear un dispositivo de última categoría, de alta calidad y disminuir cualquier posibilidad de errores de funcionamiento.
