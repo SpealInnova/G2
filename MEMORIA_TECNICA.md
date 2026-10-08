@@ -729,6 +729,30 @@ descartadas, consecuencias, fuente.
     que las 5 actualizaciones por segundo del sensor.
   - **Pendiente:** valor del multímetro para medir el error absoluto de la cadena; repetir
     con una pila; repetir con el sensor de oxígeno.
+- **Comparación con el multímetro (2026-10-08):** referencia 1.660 V (valor del usuario).
+  Con el PGA en derivación, todas las configuraciones dieron entre 1658.66 y 1659.96 mV:
+  diferencia de −0.04 a −1.34 mV (−0.003 a −0.08 %; −0.004 a −0.13 % de O₂ a 10 mV por %).
+  Con el PGA activo: −14.7 mV (ganancia 1) y −565 mV (ganancia 2). **Alcance de la
+  validación:** la coincidencia es buena, pero no certifica una exactitud absoluta mejor que
+  ~0.1 %: la referencia interna del ADC tiene ±0.1 % típico (±0.2 % máximo, o ±1.7 / ±3.3 mV
+  a 1.66 V) y el multímetro tiene su propia tolerancia. Para certificarla se necesita una
+  referencia de tensión calibrada.
+- **Análisis de ruido (2026-10-08, fuente del usuario, 90 s a 100 SPS):** herramientas
+  `tools/banco/capturar_adc.py` (en la Pi) y `tools/banco/analizar_ruido.py` (en el PC;
+  espectro de Welch, desviación de Allan y ruido restante según el corte de un filtro de
+  primer orden). Resultado: ruido total ≈ 340 µV rms (≈ 0.034 % de O₂), **concentrado por
+  debajo de 0.5 Hz** (170 µV rms por debajo de 0.1 Hz, 190 µV entre 0.1 y 0.5 Hz) y con
+  picos en 0.05, 0.63, 4 y 8 Hz; la desviación de Allan **no baja** al promediar (130 a 270 µV
+  de 0.05 s a 40 s). Es ruido lento de la fuente (probablemente un divisor del riel de 5 V
+  de la Pi), no ruido blanco del ADC (piso de ~6 µV). Consecuencias: (1) un filtro no lo
+  quita sin quitar también la señal útil (el ancho de banda de la respuesta del sensor es
+  ≈ 0.35 / 11 s ≈ 0.03 Hz): un corte de 0.2 Hz solo baja el ruido a 236 µV y exigiría unos
+  800 µF con 1 kΩ; (2) el filtrado, si hace falta, va en digital; (3) el análisis debe
+  repetirse con el sensor de oxígeno real, cuyo ruido es otro.
+- **Método para fijar la frecuencia de corte:** capturar una serie larga (≥ 90 s) con el
+  sensor real, calcular el espectro y la desviación de Allan, estimar el ancho de banda de la
+  señal (≈ 0.35 / tiempo de respuesta) y elegir un corte ≥ 3 veces mayor con un retardo
+  aceptable; se verifica con la tabla "corte frente a ruido restante" de `analizar_ruido.py`.
 - **Siguiente:** con el voltaje de muestra (pila medida con multímetro) conectado a
   AIN0 (+) y AIN1 (−, y a GND), correr `medir_adc.py --comparar --referencia-v <valor>`
   y registrar aquí el resultado para fijar la configuración.
@@ -788,6 +812,37 @@ descartadas, consecuencias, fuente.
   registros: ID = 0x23 (dispositivo 1 = ADS1263), POWER = 0x11 e INTERFACE = 0x05, los
   valores de fábrica. Confirma que el HAT está bien conectado y que CS (GPIO 22), RESET
   (GPIO 18) y SPI0 funcionan. El bus I²C 1 está vacío (aún no hay periféricos).
+
+- **Incidente de conexión SSH (2026-10-08):** durante unos minutos las conexiones desde el
+  PC expiraron antes de autenticar (el servidor las registró como "Connection reset
+  [preauth]"); el kernel no registró errores y la Pi estaba sana (carga 0, sin subtensión).
+  Causa probable (no demostrada): el ahorro de energía del WiFi, activo por omisión, con la
+  Pi solo por WiFi. **Por decisión del usuario se desactivó** (archivo
+  `/etc/NetworkManager/conf.d/10-g2-wifi-sin-ahorro.conf` e inmediato con `iw`), y quedó en
+  `scripts/aprovisionar_pi.sh`. También se vio que una de las consultas se había ejecutado
+  dentro de la propia Pi; los comandos de consulta se ejecutan desde el PC.
+
+---
+
+## D-027 — Valores por defecto de la configuración
+
+- **Fecha:** 2026-10-08
+- **Definidos por el usuario:**
+  - Intervalo de pantalla: **1 s**.
+  - Alarma de oxígeno **bajo: 20 %** (alarma cuando O₂ < 20 %) y de oxígeno **alto: 92 %**
+    (alarma cuando O₂ > 92 %). **Ambos umbrales deben poder configurarse desde la pantalla
+    Nextion y desde la plataforma** (misma regla de conflicto que el resto de la
+    configuración: gana el cambio más reciente, y cada cambio queda auditado en
+    `config_historial`).
+  - Temperatura de la Pi (aviso): **60 °C**.
+  - Uso de RAM (aviso): **85 %**.
+- **Aceptados de la propuesta:** intervalo de guardado 15 s; escala del sensor 10 mV por %
+  de O₂; retardo antes de alarmar 10 s; histéresis 0.5 % de O₂; alarma por sensores
+  discrepantes con diferencia mayor que 0.5 %; salud periódica cada 30 min; disco: aviso al
+  bajar de 20 % o 2 GB libres y crítico al bajar de 10 % o 1 GB.
+- **Pendiente:** las claves exactas de `config` y sus tipos (se definen al construir
+  `g2-core`), y la regla de qué hacen las alarmas con los dos sensores (alarma por sensor o
+  por el peor de los dos).
 
 ---
 

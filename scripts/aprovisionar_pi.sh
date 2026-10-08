@@ -16,7 +16,9 @@
 #      hardware y quita la consola serie. Para eso el UART principal debe dejar
 #      de usarse con el Bluetooth, asi que se desactiva el Bluetooth (dtoverlay
 #      disable-bt) y su servicio; ademas ahorra energia.
-#   3. Instala sqlite3 (cliente, para diagnostico) y tmux (sesiones largas por SSH).
+#   3. Instala sqlite3 (cliente, para diagnostico), tmux (sesiones largas por SSH) e iw
+#      (consulta del estado del WiFi).
+#   4. Desactiva el ahorro de energia del WiFi (ver mas abajo por que).
 #
 # Que NO hace (a proposito, por ahora): no cambia la contrasena del usuario, no
 # desactiva el escritorio (lightdm) ni los servicios avahi-daemon, rpcbind y
@@ -41,9 +43,16 @@ mostrar_estado() {
     printf "Bluetooth desactivado (disable-bt): "; grep -qE '^dtoverlay=disable-bt' "$CONFIG" && echo SI || echo NO
     printf "Consola serie en cmdline.txt      : "; grep -qE 'console=(serial0|ttyAMA0|ttyS0)' "$CMDLINE" && echo "SI (debe quitarse)" || echo NO
     printf "Servicio bluetooth                : "; systemctl is-enabled bluetooth 2>&1 || true
-    printf "sqlite3 / tmux instalados         : "
+    printf "sqlite3 / tmux / iw instalados     : "
     command -v sqlite3 >/dev/null && printf "sqlite3=SI " || printf "sqlite3=NO "
-    command -v tmux    >/dev/null && echo "tmux=SI"      || echo "tmux=NO"
+    command -v tmux    >/dev/null && printf "tmux=SI "    || printf "tmux=NO "
+    command -v iw      >/dev/null && echo "iw=SI"        || echo "iw=NO"
+    printf "Ahorro de energia del WiFi        : "
+    if command -v iw >/dev/null && ip link show wlan0 >/dev/null 2>&1; then
+        iw dev wlan0 get power_save | sed 's/^Power save: //'
+    else
+        echo "(no se puede consultar)"
+    fi
     printf "Dispositivos activos ahora        : "; ls /dev/spidev* /dev/i2c-1 /dev/serial0 2>/dev/null | tr '\n' ' ' || true; echo
 }
 
@@ -87,7 +96,22 @@ systemctl disable hciuart.service 2>/dev/null || true
 # --- 3. Paquetes -----------------------------------------------------------------
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends sqlite3 tmux
+apt-get install -y -qq --no-install-recommends sqlite3 tmux iw
+
+# --- 4. WiFi sin ahorro de energia ---------------------------------------------------
+# El ahorro de energia del WiFi viene activo por omision en la Raspberry Pi y puede
+# retrasar paquetes cuando la conexion esta ociosa: el 2026-10-08 las conexiones SSH
+# expiraron antes de autenticar (ver MEMORIA_TECNICA.md). Se desactiva de forma
+# permanente (NetworkManager, vigente desde la proxima conexion/arranque) y de inmediato
+# en la interfaz (sin cortar la conexion actual).
+install -d /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/10-g2-wifi-sin-ahorro.conf <<'CONF'
+[connection]
+wifi.powersave = 2
+CONF
+if ip link show wlan0 >/dev/null 2>&1; then
+    iw dev wlan0 set power_save off || true
+fi
 
 # --- Resultado ---------------------------------------------------------------------
 despues=$(cat "$CONFIG" "$CMDLINE" | sha256sum)

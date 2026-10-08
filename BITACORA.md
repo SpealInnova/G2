@@ -154,3 +154,12 @@ decisión están en `MEMORIA_TECNICA.md`.
   válida: ver D-025. El PGA activo da 15 mV de error con una entrada cerca de 0 V;
   con el PGA en derivación todas las configuraciones coinciden (1658.8 a
   1658.9 mV). Piso de ruido del ADC ≈ 6 µV; el ruido observado es de la fuente.
+- Valores por defecto de la configuración definidos por el usuario (D-027).
+- Comparación con el multímetro (1.660 V): diferencia de −0.04 a −1.34 mV con el PGA
+  en derivación (D-025). Limitada por la tolerancia de la referencia interna y del
+  multímetro.
+- Ahorro de energía del WiFi desactivado en la Pi (D-026) y agregado al script de
+  aprovisionamiento.
+- Herramientas `capturar_adc.py` y `analizar_ruido.py`; el ruido de la fuente de prueba
+  es lento (< 0.5 Hz) y no se puede filtrar sin quitar señal. Método para fijar el
+  corte del filtro registrado en D-025.

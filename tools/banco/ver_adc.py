@@ -3,13 +3,15 @@
     cd ~/g2/dev && PYTHONPATH=src python3 tools/banco/ver_adc.py
 
 Cada segundo imprime una linea con el promedio de las lecturas de cada par de entradas
-(por omision, sensor 1 = AIN0-AIN1 y sensor 2 = AIN2-AIN3). Se detiene con Ctrl+C.
+(por omision, sensor 1 = AIN0-AIN1 y sensor 2 = AIN2-AIN3), en VOLTIOS, con 6 decimales y
+sin notacion cientifica. Se detiene con Ctrl+C.
 
 Opciones utiles:
     --una-vez              imprime una sola linea y termina
     --pares 0-1            solo un par (o "0-1,2-3,0-10": cualquier lista de pares)
     --intervalo 2          segundos entre lineas (promedia las lecturas del intervalo)
-    --mv-por-pct 10        escala del sensor de O2 (mV por % de O2) para el valor equivalente
+    --detalle              agrega el ruido (en voltios), el numero de lecturas y el valor
+                           equivalente en % de O2 (usa --mv-por-pct, 10 por omision)
 
 Usa la configuracion definitiva del ADC (D-025: ganancia 1, PGA en derivacion, FIR 20 SPS).
 El "% equivalente" solo tiene sentido conectado a un sensor de oxigeno de 10 mV/%.
@@ -40,6 +42,8 @@ def main() -> int:
     ap.add_argument("--pares", default="0-1,2-3")
     ap.add_argument("--intervalo", type=float, default=1.0)
     ap.add_argument("--mv-por-pct", type=float, default=10.0)
+    ap.add_argument("--detalle", action="store_true",
+                    help="agrega ruido, numero de lecturas y % de O2 equivalente")
     ap.add_argument("--una-vez", action="store_true")
     args = ap.parse_args()
     pares = [tuple(int(x) for x in p.split("-")) for p in args.pares.split(",")]
@@ -63,10 +67,14 @@ def main() -> int:
                     except A.ErrorAdc as error:
                         partes.append(f"{par[0]}-{par[1]}: ERROR {error}")
                         continue
-                    mv = statistics.fmean(v) * 1000
-                    ruido = (statistics.stdev(v) * 1e6) if len(v) > 1 else float("nan")
-                    partes.append(f"AIN{par[0]}-{par[1]}: {mv:10.3f} mV (±{ruido:6.1f} µV, "
-                                  f"≈{mv / args.mv_por_pct:7.3f} %O2, n={len(v)})")
+                    voltios = statistics.fmean(v)
+                    texto = f"AIN{par[0]}-{par[1]}: {voltios:10.6f} V"
+                    if args.detalle:
+                        ruido = statistics.stdev(v) if len(v) > 1 else 0.0
+                        equivalente = voltios * 1000 / args.mv_por_pct
+                        texto += (f"  (ruido ±{ruido:.6f} V, n={len(v)}, "
+                                  f"≈{equivalente:.3f} %O2)")
+                    partes.append(texto)
                 print(time.strftime("%H:%M:%S"), " | ".join(partes), flush=True)
                 if args.una_vez:
                     return 0
