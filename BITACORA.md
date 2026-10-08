@@ -82,3 +82,75 @@ decisión están en `MEMORIA_TECNICA.md`.
   lecturas sin borrar nada); respaldos generados por la plataforma en un
   Drive de la empresa (configuración posterior); el primer commit incluye
   todo, también `CONTEXTO.md` y `Mejoras.txt` (origen del proyecto).
+
+## 2026-10-04
+
+- Se subió el primer commit a `SpealInnova/G2` (`d991cfa`). El usuario
+  `williamrubio1` quedó como colaborador del repositorio, que es público.
+- Búsqueda de analizadores de oxígeno de referencia (AMI, Oxysystems,
+  OxyPro, S4 Aurora, plantas PSA con monitoreo remoto). Hallazgo: el OxyPro
+  de PSC usa el mismo sensor Paracube Micro.
+- Decisión del usuario: esta versión es para hospitales (D-017).
+- Se analizó la recuperación escalonada sin reiniciar la Raspberry Pi
+  (D-018) y la viabilidad de alertas por correo o WhatsApp y de reinicio
+  remoto (D-019). Pendiente confirmar el cambio de esquema de `arranque`.
+- El usuario propuso resolver el registro de reinicios de servicio con una
+  columna de razón en vez de reconstruir `arranque`; se acepta (D-018).
+- Requisito de audio por el puerto de la Raspberry Pi (D-020).
+- Se revisó la plataforma `iot-elsalvador` para las alertas por correo
+  (D-021): ya tiene alertas pero no correo; el despliegue es automático con
+  cada push a `main`; se anotaron observaciones de seguridad.
+- Audio: se cancela el audio por la Raspberry Pi; se conserva el de la
+  Nextion comandado desde la Raspberry Pi (D-020).
+- Alertas por correo: confirmadas por el usuario y construidas en la rama
+  local `feature/alertas-correo` de la plataforma, sin commit ni push
+  (D-021). 18 pruebas pasan; falta probar con MySQL y SMTP reales.
+- Se reemplazó el token real de `.env.example` por un marcador y se
+  documentó el plan de seguridad por etapas (D-022).
+- Hardware definido por el usuario: ADC Waveshare ADS1263 (10 canales, 32 bits),
+  2 sensores analógicos, 2 relés y 1 LED de alarma, periféricos de temperatura,
+  humedad, vibración, presión y humedad de línea (D-023). Se creó `HARDWARE.md`.
+- Requisito de trabajar todo por SSH hacia la Raspberry Pi (D-024).
+- Respuestas del usuario: relés para alarmas AC, sensor de temperatura y humedad
+  junto a los sensores de oxígeno, pines de la cabecera expuestos (D-023).
+- Se aplicó la migración 004 (`arranque.razon` y `arranque.so_boot_id`, D-018) y se
+  refactorizó el generador de la cadena. 62 pruebas, todas pasan.
+
+## 2026-10-05
+
+- Se leyó la hoja de datos del ADS126x (TI). Conclusión: ganancia 1 con PGA en
+  derivación; no hace falta amplificar. Registrado en D-025 y `HARDWARE.md` §3.
+
+## 2026-10-08
+
+- Acceso SSH a la Raspberry Pi de G2: se instaló una llave propia de este PC
+  (detalles de acceso en las notas locales, no publicadas) (D-026).
+- Reconocimiento de solo lectura: Pi 3 Model B Plus, Trixie con escritorio, Python
+  3.13.5, SQLite 3.46.1; SPI, I²C y UART sin habilitar.
+- Se cargó el código en `~/g2/dev` y las 62 pruebas pasan en la Pi.
+- Aprovisionamiento de la Pi con `scripts/aprovisionar_pi.sh`: SPI, I²C y UART
+  habilitados, consola serie y Bluetooth desactivados, `sqlite3` y `tmux`
+  instalados; reinicio verificado. Contraseña y escritorio sin cambios, por decisión
+  del usuario.
+- Sonda `tools/banco/sonda_ads1263.py`: ADS1263 detectado por SPI (ID 0x23).
+- Decisión del usuario: se conservan `avahi-daemon`, `rpcbind` y `nfs-blkmap`
+  (se mantienen abiertos varios canales de comunicación con la Pi).
+- Controlador del ADS1263 (`src/g2/hardware/`), emulador y herramienta de banco
+  (`tools/banco/medir_adc.py`). 82 pruebas. Primera lectura real: el flujo funciona;
+  falta la medición con el voltaje de referencia (D-025).
+- Primer intento de medición con voltaje de muestra (usuario: 2.5 V en IN0): las lecturas
+  fueron ruidosas e inestables (IN0 contra AINCOM ≈ 1.87 V con desviación de 118 mV; IN1
+  contra AINCOM ≈ 1.93 V con 118 mV; IN0 contra IN1 ≈ 8.8 mV con 9.5 mV). Es el
+  comportamiento de entradas sin referencia a tierra: la fuente no queda referida a GND.
+  Medición no válida; se pidió revisar la conexión del negativo y usar ≤ 2.4 V.
+- Segundo intento de medición. Con una referencia de 5 V de diagnóstico (preset
+  `diagnostico_5v`, aproximada) se vio: IN0 contra COM ≈ 2.503 V (dispersión ≈ 4 mV);
+  IN1 contra COM saturado en ≥ 5 V; IN0 contra IN1 ≈ −2.51 V. Conclusión: IN0 recibe
+  los 2.5 V, pero IN1 está conectada a una tensión ≥ 5 V (probablemente al riel de 5 V),
+  por lo que la medición diferencial IN0–IN1 se satura. Con la referencia interna, 2.5 V
+  está justo en el límite del rango (±2.5 V) y también satura. Se agregó la opción
+  `referencia="avdd"` al controlador (85 pruebas).
+- Conexión corregida por el usuario (IN1 a GND, IN0 a ~1.6 V). Primera medición
+  válida: ver D-025. El PGA activo da 15 mV de error con una entrada cerca de 0 V;
+  con el PGA en derivación todas las configuraciones coinciden (1658.8 a
+  1658.9 mV). Piso de ruido del ADC ≈ 6 µV; el ruido observado es de la fuente.

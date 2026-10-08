@@ -85,14 +85,14 @@ class BasePruebas(unittest.TestCase):
 
 class PruebasMigraciones(BasePruebas):
     def test_version_final_y_registro(self) -> None:
-        self.assertEqual(migraciones.version_actual(self.db), 3)
+        self.assertEqual(migraciones.version_actual(self.db), 4)
         versiones = [f["version"] for f in self.db.execute("SELECT version FROM esquema_version")]
-        self.assertEqual(versiones, [1, 2, 3])
+        self.assertEqual(versiones, [1, 2, 3, 4])
 
     def test_migrar_dos_veces_no_cambia_nada(self) -> None:
-        self.assertEqual(migraciones.migrar(self.db), 3)
+        self.assertEqual(migraciones.migrar(self.db), 4)
         cantidad = self.db.execute("SELECT COUNT(*) FROM esquema_version").fetchone()[0]
-        self.assertEqual(cantidad, 3)
+        self.assertEqual(cantidad, 4)
 
     def test_rechaza_base_mas_nueva_que_el_codigo(self) -> None:
         self.db.execute("PRAGMA user_version = 99")

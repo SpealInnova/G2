@@ -50,18 +50,19 @@ def contenido(prefijo: str, cols: list[str]) -> str:
     return f"json_object(\n            {pares})"
 
 
-def generar() -> str:
-    # Esquema real de las migraciones previas, en una base temporal en memoria.
+def esquema_en_memoria(migraciones: tuple[str, ...]) -> sqlite3.Connection:
+    """Base temporal en memoria con las migraciones indicadas, para leer el
+    esquema real (columnas) de las tablas auditadas."""
     memoria = sqlite3.connect(":memory:")
-    for nombre in ("001_esquema_inicial.sql", "002_catalogo_inicial.sql"):
+    for nombre in migraciones:
         memoria.executescript((SQL / nombre).read_text(encoding="utf-8"))
+    return memoria
 
-    sal = [ENCABEZADO]
-    vistas = []
-    for tabla, con_rev in AUDITADAS.items():
-        cols = columnas(memoria, tabla)
-        rev_nueva = "NEW.rev" if con_rev else "1"
-        sal.append(f"""
+
+def texto_trigger_insert(tabla: str, cols: list[str], con_rev: bool) -> str:
+    """Disparador que agrega el eslabon al crear un registro auditado."""
+    rev_nueva = "NEW.rev" if con_rev else "1"
+    return f"""
 -- ---- {tabla} ----
 CREATE TRIGGER tr_{tabla}_cadena_insert
 AFTER INSERT ON {tabla}
@@ -74,9 +75,12 @@ BEGIN
                               ORDER BY seq DESC LIMIT 1), '{GENESIS}') AS h) AS p,
            (SELECT sha256({contenido("NEW.", cols)}) AS h) AS r;
 END;
-""")
-        if con_rev:
-            sal.append(f"""
+"""
+
+
+def texto_trigger_rev(tabla: str, cols: list[str]) -> str:
+    """Disparador que agrega el eslabon al cambiar la revision de un registro."""
+    return f"""
 CREATE TRIGGER tr_{tabla}_cadena_rev
 AFTER UPDATE OF rev ON {tabla}
 WHEN NEW.rev <> OLD.rev
@@ -89,20 +93,38 @@ BEGIN
                               ORDER BY seq DESC LIMIT 1), '{GENESIS}') AS h) AS p,
            (SELECT sha256({contenido("NEW.", cols)}) AS h) AS r;
 END;
-""")
+"""
+
+
+def texto_vista(memoria: sqlite3.Connection, crear: str = "CREATE VIEW") -> str:
+    """Vista con el contenido actual (huella) de cada registro auditado."""
+    vistas = []
+    for tabla, con_rev in AUDITADAS.items():
+        cols = columnas(memoria, tabla)
         rev_vista = "rev" if con_rev else "1"
         vistas.append(
             f"SELECT '{tabla}' AS tabla, id AS registro_id, {rev_vista} AS rev,\n"
             f"       sha256({contenido('', cols)}) AS hash_actual\n"
             f"  FROM {tabla}"
         )
-
-    sal.append("""
+    return f"""
 -- Contenido actual de cada registro auditado, con la misma formula de huella que
 -- usan los disparadores. La verificacion (g2.almacenamiento.auditoria) la compara
 -- con el ultimo eslabon de la cadena de cada registro.
-CREATE VIEW v_cadena_contenido AS
-""" + "\nUNION ALL\n".join(vistas) + ";\n")
+{crear} v_cadena_contenido AS
+""" + "\nUNION ALL\n".join(vistas) + ";\n"
+
+
+def generar() -> str:
+    """Texto completo de la migracion 003."""
+    memoria = esquema_en_memoria(("001_esquema_inicial.sql", "002_catalogo_inicial.sql"))
+    sal = [ENCABEZADO]
+    for tabla, con_rev in AUDITADAS.items():
+        cols = columnas(memoria, tabla)
+        sal.append(texto_trigger_insert(tabla, cols, con_rev))
+        if con_rev:
+            sal.append(texto_trigger_rev(tabla, cols))
+    sal.append(texto_vista(memoria))
     sal.append(PIE)
     return "".join(sal)
 

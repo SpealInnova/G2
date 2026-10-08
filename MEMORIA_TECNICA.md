@@ -110,7 +110,8 @@ descartadas, consecuencias, fuente.
 
 - **Fecha:** 2026-10-03
 - **Decisión:** Raspberry Pi 3 B con Raspberry Pi OS de 64 bits, basado en
-  Debian Trixie.
+  Debian Trixie. (Verificado el 2026-10-08: el equipo de desarrollo es una
+  Raspberry Pi 3 Model B Plus Rev 1.4; ver D-026.)
 - **Implicaciones para el diseño:**
   - 1 GB de RAM compartida: se limita la memoria por servicio y se evitan
     bibliotecas pesadas.
@@ -368,8 +369,438 @@ descartadas, consecuencias, fuente.
 
 ---
 
+## D-017 — Uso previsto: hospitales (versión industrial después)
+
+- **Fecha:** 2026-10-04
+- **Decisión (del usuario):** esta versión de G2 es para **hospitales**; la
+  versión industrial se hará más adelante.
+- **Consecuencias:** la trazabilidad, la auditoría, la confiabilidad y el
+  registro de fallas dejan de ser deseables y pasan a ser requisitos. Hay que
+  confirmar con un experto en regulación qué normas aplican (por ejemplo las
+  ISO 80601-2-55, ISO 80601-2-69 e ISO 7396-1 aparecen en la bibliografía de
+  analizadores de oxígeno) y qué registro sanitario exige cada país. Aún no se
+  ha verificado el texto de ninguna norma.
+- **Regla de diseño:** las notificaciones remotas (correo, WhatsApp) son un
+  aviso secundario; el aviso primario de una alarma es siempre local (pantalla,
+  sonido, salidas) y no depende de la red.
+
+## D-018 — Recuperación escalonada: reiniciar sin apagar la Raspberry Pi
+
+- **Fecha:** 2026-10-04
+- **Decisión (propuesta, falta confirmar el cambio de esquema):** ante una falla
+  se prueba la medida más pequeña que sirva, y solo se reinicia la Raspberry Pi
+  cuando las anteriores no bastan:
+  1. Dentro del proceso: reintentar y reabrir el dispositivo (puerto serie,
+     bus I²C) sin reiniciar nada.
+  2. Reiniciar **un servicio** (`g2-core`, `g2-uplink` o `g2-ui`): lo hace
+     systemd ante una falla o un watchdog vencido, o un comando remoto.
+     Tarda segundos y la Raspberry Pi sigue encendida.
+  3. Reiniciar **todos los servicios de G2**.
+  4. Reiniciar la Raspberry Pi: solo si se supera el límite de reinicios de
+     servicio, si falla un bus o dispositivo que un reinicio de servicio no
+     libera, o si el sistema operativo se cuelga (perro guardián de hardware).
+  5. Modo seguro tras reinicios repetidos.
+- **Registro de cada reinicio:** antes de reiniciar se registra el motivo y
+  quién lo pidió; al arrancar se registra qué ocurrió. Un reinicio de servicio
+  no apaga el equipo y queda en `evento` (`SVC_REINICIADO`,
+  `SVC_BLOQUEO_DETECTADO`) y en `arranque`. Para saber si el servicio anterior
+  terminó de forma limpia, `g2-core` deja una marca de apagado limpio en la
+  base antes de salir; si al iniciar no está, el cierre anterior fue anormal.
+  Un corte de energía no se puede evitar por software, solo inferir después
+  (falta de marca de apagado limpio e indicador `throttled`).
+- **Cambio de esquema (propuesta del usuario, más simple que la mía; falta
+  aplicarla):** en lugar de reconstruir `arranque`, se agrega **una razón**.
+  Nueva migración 004 (la 001 ya está publicada) con `ALTER TABLE ... ADD
+  COLUMN`, que no obliga a reconstruir nada:
+  - `razon`: código del catálogo (reinicio de servicio, reinicio remoto,
+    actualización, falla de servicio, encendido normal...), nullable.
+  - `so_boot_id`: identificador del encendido del sistema operativo,
+    nullable.
+  - `boot_id` pasa a identificar **cada inicio de `g2-core`** (por ejemplo,
+    `<encendido>#<n>`), así que la restricción de unicidad actual sigue siendo
+    válida. Así cada reinicio de servicio deja su fila, con su versión de
+    software, y no se pierde la trazabilidad de qué versión produjo cada
+    lectura.
+  - `causa` conserva sus cinco valores (nivel del sistema); el detalle de un
+    reinicio de servicio lo da `razon`. Es un compromiso aceptable.
+  - Hay que regenerar los disparadores de la cadena de auditoría de
+    `arranque` y la vista `v_cadena_contenido` para que las columnas nuevas
+    entren en la huella (`tools/generar_cadena.py` debe leer todas las
+    migraciones anteriores, no solo 001 y 002). Las huellas de filas
+    existentes cambiarían; no hay equipos instalados todavía, así que es el
+    momento barato para cerrar las columnas de las tablas auditadas.
+
+- **Aplicado (2026-10-04):** migración `004_razon_arranque.sql`, generada por
+  `tools/generar_migracion_004.py`. Agrega `arranque.razon` y `arranque.so_boot_id`,
+  dos códigos nuevos de catálogo (`SYS_REINICIO_SOLICITADO`, `SYS_ACTUALIZACION`),
+  vuelve a crear los disparadores de la cadena de `arranque` y la vista
+  `v_cadena_contenido` (las columnas nuevas entran en la huella) y re-sella las filas
+  de `arranque` anteriores con una revisión nueva. La 003 no se tocó (se comprobó que
+  regenerarla produce el mismo archivo). `tools/generar_cadena.py` se dividió en
+  funciones reutilizables. 62 pruebas pasan, incluida una migración de una base en
+  versión 3 con datos a la 4.
+
+## D-019 — Alertas por correo o WhatsApp y reinicio remoto (viabilidad)
+
+- **Fecha:** 2026-10-04
+- **Decisión (del usuario):** le gustan estas dos mejoras; se pidió evaluar
+  si son implementables en software.
+- **Conclusión:** ambas son implementables. La parte de software es pequeña o
+  mediana; lo que más pesa son trámites con terceros y la seguridad.
+- **Alertas (se generan en la plataforma, no en el equipo):** el equipo solo
+  envía sus alarmas; la plataforma decide a quién avisar. Así las credenciales
+  de correo y de WhatsApp quedan en un solo lugar y no en cada equipo.
+  - Correo: SMTP o un servicio de envío transaccional; hay que configurar
+    SPF y DKIM del dominio para que no caiga en spam.
+  - WhatsApp: la API oficial (WhatsApp Business Platform) exige cuenta de
+    empresa verificada, plantillas de mensaje aprobadas por Meta para avisos
+    iniciados por la empresa, consentimiento de cada destinatario y costo por
+    mensaje (verificar la tarifa vigente). No usar bibliotecas no oficiales:
+    violan los términos de uso y pueden bloquear el número.
+  - Reglas necesarias: contactos por rol y horario, escalamiento si nadie
+    acusa, acuse de recibo, límite de frecuencia para no repetir el mismo aviso
+    en cada muestra, estado de entrega y registro de cada aviso en la
+    auditoría. También alerta de **equipo sin reportar** (la plataforma detecta
+    la falta de latidos), porque un equipo sin red no puede avisar por sí mismo.
+  - Para alarmas críticas se recomienda un canal adicional con confirmación
+    (SMS o llamada), ya que WhatsApp no garantiza entrega inmediata.
+- **Reinicio remoto:** comandos `reiniciar_servicio` y `reiniciar_equipo`.
+  - El equipo consulta o mantiene la conexión hacia la plataforma (no se abren
+    puertos de entrada). Hay que elegir entre consulta periódica y conexión
+    permanente (compromiso entre latencia y consumo).
+  - Comandos firmados por la plataforma y verificados por el equipo, con rol
+    autorizado, confirmación, límite de frecuencia y registro en `comando` y en
+    la cadena de auditoría.
+  - El reinicio se ejecuta con un permiso restringido (solo `systemctl restart`
+    de las unidades de G2 y el reinicio del equipo), con tiempo máximo y sin
+    usar `os.system`.
+  - Reglas de seguridad clínica: bloquear o exigir confirmación adicional si
+    hay una calibración en curso o una alarma activa, mostrar en la pantalla
+    quién lo pidió y alertar si el equipo no regresa en un tiempo razonable.
+  - `g2-uplink` puede reiniciar `g2-core` aunque este esté colgado, y el perro
+    guardián de hardware cubre el caso de que `g2-uplink` también falle.
+- **Pendiente:** elegir proveedor de correo y de mensajería, iniciar el trámite
+  de WhatsApp Business, y definir el protocolo de comandos con la plataforma.
+
+---
+
+## D-020 — Audio: se conserva el de la Nextion, comandado desde la Raspberry Pi
+
+- **Fecha:** 2026-10-04
+- **Decisión (del usuario):** el audio sigue siendo el de la pantalla Nextion,
+  comandado desde la Raspberry Pi. **Se cancela** el uso del puerto de audio de
+  la Raspberry Pi propuesto antes; se mantiene lo supuesto en D-009 (tres
+  servicios, audio de la Raspberry Pi apagado).
+- **Consecuencia a vigilar:** el puerto serie de la Nextion lo posee `g2-ui`,
+  así que el aviso sonoro de una alarma depende de que `g2-ui` esté en marcha.
+  `g2-core` pide el sonido a `g2-ui`; mientras `g2-ui` falle, el zumbador por
+  GPIO que maneja `g2-core` sigue como respaldo del aviso sonoro (D-012 vigila
+  a `g2-ui`).
+
+## D-021 — Alertas por correo electrónico (en la plataforma)
+
+- **Fecha:** 2026-10-04
+- **Decisiones del usuario (confirmadas):**
+  - Los destinatarios (uno o varios) los agrega el usuario admin de la
+    plataforma `iot-elsalvador`.
+  - El registro de correos es visible desde la plataforma.
+  - Columna `sin_reporte_min` en `equipos_config` (alerta de equipo sin
+    reportar).
+  - **Un solo aviso por alerta, con la hora de inicio**, para no generar
+    sobrealerta de eventos fáciles de resolver: sin recordatorios y sin correo
+    de cierre.
+  - Código y dependencia `nodemailer`.
+  - Remitente: `innova@speal-intl.com` (cuenta del administrador de los
+    dispositivos; el dominio usa Google Workspace).
+- **Construido (2026-10-04), en la rama local `feature/alertas-correo` del
+  repositorio de la plataforma, sin commit ni push:**
+  - `notificaciones/`: lógica pura (`logica.js`), acceso a MySQL
+    (`repositorio.js`), SMTP (`smtp.js`) y el notificador (`index.js`).
+  - Ganchos en `server.js`: las dos alertas de `verificarAlertas` y la
+    recepción de datos (para vigilar el silencio de un equipo). El correo no
+    bloquea la recepción de datos.
+  - API solo para admin: destinatarios, estado y prueba de correo, registro de
+    correos y minutos de silencio por equipo.
+  - Pestaña **Correos** en el panel admin, con el texto escapado antes de
+    mostrarlo.
+  - `migration_alertas_correo.sql`, `schema_mysql.sql`,
+    `DOCUMENTACION_TECNICA.md` y `.env.example` (sin secretos).
+  - 18 pruebas con `node --test` sobre la lógica, con repositorio y SMTP
+    simulados.
+- **Decisiones de detalle tomadas al construir (el usuario puede cambiarlas):**
+  - Ventana de supresión de 60 min (`MAIL_VENTANA_SUPRESION_MIN`): no se repite
+    el aviso del mismo tipo, equipo y destinatario. Evita avisos duplicados por
+    una alerta que oscila o por un reinicio del servidor (cada despliegue lo
+    reinicia). Una alerta nueva del mismo tipo dentro de la ventana queda
+    registrada como "omitida".
+  - Se descartaron del diseño la severidad mínima y el aviso de cierre del
+    destinatario, por la regla de un solo aviso.
+  - Tras un reinicio del servidor, el silencio de un equipo se cuenta desde el
+    arranque.
+  - La hora de inicio se escribe en `America/Bogotá` (`MAIL_TZ`).
+  - Reintentos de envío: esperas de 1, 5, 15 y 60 min, hasta 5 intentos.
+- **Lo que NO se ha verificado:** las consultas SQL de `repositorio.js` no se
+  han ejecutado contra MySQL (no hay MySQL local); no se ha enviado ningún
+  correo real; la interfaz no se ha abierto en un navegador. Falta probarlo en
+  un entorno con base de datos y la cuenta de correo.
+- **Pasos del usuario para activarlo:** crear una contraseña de aplicación de
+  `innova@speal-intl.com` (requiere verificación en dos pasos) y escribirla en
+  el `.env` del servidor como `SMTP_PASS` (nunca en el repositorio ni en un
+  mensaje); luego, desde la pestaña **Correos**, agregar destinatarios y usar
+  "Enviar prueba".
+- **Despliegue:** `deploy.yml` publica en producción con cada push a `main`.
+  Nada se sube sin una orden explícita; lo recomendable es abrir una solicitud
+  de cambios (pull request) desde la rama y fusionarla cuando se decida.
+
+## D-022 — Seguridad de la plataforma (propuesta, falta confirmar)
+
+- **Fecha:** 2026-10-04
+- **Voluntad del usuario:** sacar los tokens del código y de `.env.example`
+  (guardarlos en la base de datos), cambiar periódicamente las contraseñas,
+  y que las contraseñas no queden expuestas.
+- **Hallazgos (código revisado):**
+  - `.env.example` contenía un token real; ya se reemplazó por un marcador.
+    Sigue estando (a) en el historial de git del repositorio, (b) como valor
+    por omisión en `server.js` y (c) en `DOCUMENTACION_TECNICA.md`. Como estuvo
+    publicado en el repositorio, debe considerarse comprometido y rotarse.
+  - Las contraseñas **ya están en la base de datos**, pero **en texto plano**, y
+    el sistema las usa como credencial en **cada petición** (cabeceras
+    `x-admin-token`, `x-user-token` y la URL de `/api/stream`). Arreglarlo
+    exige cambiar el inicio de sesión, no solo la forma de guardarlas.
+  - Existe un administrador por defecto con contraseña `123456789`, creado en
+    cada arranque con `INSERT IGNORE`.
+- **Plan propuesto, por etapas (cada una con confirmación):**
+  1. Contraseñas con hash y sal (`scrypt`, incluido en Node; sin dependencia
+     nueva), inicio de sesión que entrega un token de sesión aleatorio con
+     vencimiento, y el panel y las rutas pasan a usar ese token en lugar de
+     la contraseña. Eliminar el administrador por defecto: el primero se crea
+     por una variable de entorno o un script único, con cambio obligatorio.
+  2. Vencimiento periódico de contraseñas (por ejemplo 90 días, configurable),
+     cambio obligatorio al iniciar sesión y reglas mínimas de complejidad.
+  3. Tokens de dispositivos guardados con hash (SHA-256) en la base de datos y
+     mostrados una sola vez al crearlos; todos los equipos con token
+     individual; retirar el token global de respaldo y rotarlo.
+- **Cambios de esquema necesarios:** `usuarios` (hash, fecha del último cambio,
+  cambio obligatorio), una tabla de sesiones y `equipos_config` (hash del
+  token).
+- **Riesgo a coordinar:** los equipos instalados usan hoy el token global o
+  uno individual; rotar o retirar el global antes de actualizar sus tokens deja
+  esos equipos sin transmitir. Va después de migrar cada equipo y con una
+  ventana acordada.
+
+---
+
+## D-023 — ADC, periféricos y salidas
+
+- **Fecha:** 2026-10-04
+- **Decisiones (del usuario):**
+  - ADC: Waveshare **High-Precision AD HAT con ADS1263**, 10 canales, 32 bits. Los
+    sensores de oxígeno se conectan a sus entradas analógicas (pares
+    diferenciales), no a un puerto de la Raspberry Pi.
+  - Se esperan **2 sensores de oxígeno analógicos**.
+  - Salidas: **dos relés y un LED de alarma**.
+  - Periféricos deseados: temperatura y humedad, un sensor de movimiento para
+    vibración (y, si se puede, inclinación), presión barométrica y un sensor de
+    humedad en la línea de aire.
+- **Aclaración técnica:** el giroscopio no mide presión (hPa); los hPa los da un
+  barómetro. Se propone BME280 (temperatura, humedad y presión) más un IMU
+  (acelerómetro + giroscopio) para vibración e inclinación.
+- **Documento de referencia:** `HARDWARE.md` (diagrama, mapa de pines, direcciones
+  I²C, puntos por verificar). El mapa de pines es propuesta, excepto los pines del
+  ADC, que vienen de la documentación del fabricante.
+- **Impactos en el diseño:**
+  - El ADC va por SPI con CS por software (GPIO 22), DRDY (17) y RESET (18); el
+    controlador usa `spidev` y `lgpio`/`gpiod`, no `RPi.GPIO`.
+  - Lectura diferencial P2–P3 por sensor; falta verificar en el banco el límite
+    de tensión de entrada con el sobrerrango negativo.
+  - Fuente de 5 V limpia para los sensores (rizado < 0.1 V) y cables cortos.
+  - Sin zumbador por GPIO: el aviso sonoro es el de la Nextion (D-020); el relé de
+    alarma puede manejar un zumbador externo.
+- **Respuestas del usuario (2026-10-04):**
+  - Los relés **activan alarmas de corriente alterna (AC)**; la función de cada
+    relé sigue sin confirmar (se propone relé 1 = alarma de oxígeno y relé 2 =
+    falla del equipo, energizado en normal). Conmutar AC en un equipo hospitalario
+    exige dimensionar los contactos, proteger y aislar; ver `HARDWARE.md` §7.
+  - Un sensor de **temperatura y humedad va muy cerca de los sensores de oxígeno**,
+    para medir el ambiente de los sensores y de la Raspberry Pi; no está en la
+    línea de gas. El sensor de humedad de la línea de aire sigue sin definir.
+  - Los pines de la cabecera quedan **expuestos** con el HAT.
+  - Las referencias de los periféricos las dará el usuario más adelante.
+
+## D-024 — Desarrollo y operación remotos por SSH
+
+- **Fecha:** 2026-10-04
+- **Requisito (del usuario):** todo el trabajo sobre el equipo se hace por **SSH**
+  hacia la Raspberry Pi; el diseño debe tenerlo en cuenta.
+- **Consecuencias de diseño:**
+  - **Sin interfaz gráfica:** todo se opera por línea de comandos. Se agregará una
+    herramienta `g2ctl` con salida legible y en JSON: estado de los servicios,
+    lectura en vivo, autodiagnóstico, configuración, calibración y paquete de
+    diagnóstico. Los registros se consultan con `journalctl`.
+  - **Emuladores:** la mayor parte del desarrollo y de las pruebas se hace en el PC
+    con emuladores de ADC, de I²C y de pantalla; en la Raspberry Pi, por SSH, solo
+    se prueba lo que necesita el hardware (pruebas marcadas aparte).
+  - **Instalación repetible:** un script de aprovisionamiento idempotente configura
+    el sistema (SPI, I²C, UART, usuarios, permisos, servicios). Los cambios de
+    arranque (por ejemplo `config.txt`) exigen reinicio; el script lo avisa. Sirve
+    también como documentación para el manual.
+  - **Despliegue con vuelta atrás:** cada versión en su propia carpeta y un enlace
+    `actual`; si la nueva falla tras reiniciar los servicios, se vuelve a la anterior.
+  - **No perder el acceso:** cualquier cambio de red (WiFi, Ethernet, ZeroTier,
+    cortafuegos) se aplica con reversión automática si no se confirma en un tiempo
+    corto; el acceso por ZeroTier no depende de lo que haga G2. Las sesiones largas
+    van dentro de `tmux`.
+  - **Seguridad del acceso:** SSH solo con llaves; los servicios corren con un
+    usuario propio sin shell y con permisos mínimos sobre SPI, I²C y GPIO; la
+    única elevación permitida es reiniciar las unidades de G2 (D-019).
+
+---
+
+## D-025 — Configuración del ADS1263 y plan de puesta en marcha
+
+- **Fecha:** 2026-10-05
+- **Contexto:** el usuario preguntó si conviene usar la ganancia (PGA) del ADS1263 para
+  amplificar la señal del sensor (0 a 1 V) y reducir ruido, con 2 sensores.
+- **Fuente:** hoja de datos de TI, ADS126x (SBAS661C), leída el 2026-10-05; datos en
+  `HARDWARE.md` §3.
+- **Decisión de diseño (propuesta; se confirma con medidas en el banco):**
+  - Ganancia 1 y **PGA en derivación (bypass)**; referencia interna de 2.5 V
+    (rango ±2.5 V, que cubre −0.15 a +2.0 V del sensor).
+  - **Razón:** el ruido del ADC a ganancia 1 (~1.3 µV pico a pico, 20 SPS) es unas
+    1500 veces menor que el ruido del sensor (< 0.2 % de O₂ ≈ 2 mV); amplificar no
+    mejora la medición y recorta el rango. Con el PGA activo las entradas deben estar
+    por encima de 0.3 V y P3 queda cerca de 0 V.
+  - Dos sensores en entradas diferenciales: sensor 1 en AIN0–AIN1 y sensor 2 en
+    AIN2–AIN3, leídos de forma secuencial con conversiones de ciclo único.
+  - Filtro FIR a 20 SPS (rechazo de 50 y 60 Hz, por confirmar) y modo chopper o
+    autocalibración de offset (el offset sin chopper es ~350 µV ≈ 0.035 % de O₂).
+  - La reducción de ruido real se logra con una fuente de 5 V limpia para los
+    sensores, cables cortos y apantallados, separación de los relés de AC y promedio
+    por ventana de 200 ms.
+- **Plan de puesta en marcha (por SSH):**
+  1. Banco con un voltaje conocido (por ejemplo una pila medida con multímetro) para
+     validar el ADC; después con el sensor de oxígeno.
+  2. Controlador del ADS1263 en Python (`spidev` y `lgpio`; CS en GPIO 22, DRDY en 17,
+     RESET en 18) con un emulador de la misma interfaz para las pruebas en el PC.
+  3. Herramienta de banco que lee los canales y calcula promedio, desviación y valores
+     pico a pico con distintas configuraciones, para decidir con datos y registrarlo
+     aquí.
+  4. Integración en `g2-core`.
+- **Implementado (2026-10-08):**
+  - `src/g2/hardware/ads1263.py`: controlador del ADC1 (reinicio, identificación,
+    configuración con verificación por lectura de vuelta, conversión continua, lectura
+    diferencial por RDATA1, suma de control, detección de reinicio del chip y tiempos
+    máximos en toda espera). Cada constante cita la tabla o sección de la hoja de datos.
+  - `src/g2/hardware/ads1263_emulado.py`: emulador del chip con reloj simulado e
+    inyección de fallas (sin datos, suma de control mala, reinicio).
+  - `src/g2/hardware/puerto_spi_pi.py`: puerto real (`spidev` y `lgpio`; CS en GPIO 22,
+    RESET en 18).
+  - `tools/banco/medir_adc.py`: herramienta de banco con configuraciones predefinidas
+    (`--comparar`), comparación con una referencia de multímetro y salida en JSON.
+  - 20 pruebas nuevas del controlador contra el emulador (82 en total). Límite de
+    estas pruebas: el emulador refleja la lectura que se hizo de la hoja de datos; la
+    validación real es la medición en el banco.
+- **Primera lectura con el chip real (2026-10-08):** el flujo completo funciona (reinicio,
+  configuración, conversión, suma de control correcta): ~18 lecturas por segundo con FIR
+  a 20 SPS, desviación ≈ 6 µV con lo que hubiera conectado (no era una medición válida: aún
+  no había voltaje de referencia conectado). Hallazgo: con el PGA en derivación el bit
+  "salida alta del PGA" del byte de estado aparece activo; los monitores del PGA no
+  aplican en derivación, por eso el controlador los ignora en ese caso.
+- **Primera medición válida con voltaje de muestra (2026-10-08):** IN0 a ~1.6 V (fuente
+  del usuario, valor de multímetro aún sin informar), IN1 a GND. Resultados con
+  `medir_adc.py --par 0-1 --muestras 100 --comparar`:
+  - **El ADC no es el límite:** IN1 contra COM (ambas a tierra) dio 0.37 mV de promedio,
+    5.7 µV de desviación y 25 µV pico a pico con FIR a 20 SPS (≈ 0.0025 % de O₂ a
+    10 mV por %). Es el piso de ruido de la cadena.
+  - **El PGA activo falla en esta conexión, como se predijo:** con el PGA activo y una
+    entrada cerca de 0 V la lectura quedó 15 mV por debajo (1643.7 mV frente a
+    1658.8 mV; ≈ 1.5 % de O₂ en el sensor) y el chip marcó la alarma "salida baja del
+    PGA". Con ganancia 2 y PGA activo la lectura fue 1093.6 mV (esperado 1658.8 mV).
+    Confirma la decisión de ganancia 1 con el PGA en derivación.
+  - **Todas las configuraciones con el PGA en derivación coinciden** en 1658.8 a
+    1658.9 mV (diferencia de 0.1 mV ≈ 0.01 % de O₂).
+  - **El ruido observado lo domina la fuente:** la dispersión varió de 143 a 844 µV entre
+    corridas hechas con la misma configuración, muy por encima del piso del ADC (6 µV), por
+    lo que no se puede elegir filtro con esta fuente. Hace falta una fuente más limpia
+    (pila) o el sensor real.
+  - **Decisión provisional:** configuración "recomendada" (ganancia 1, PGA en derivación,
+    FIR a 20 SPS, sin chopper). Con dos sensores en lectura alternada, cada uno se muestrea
+    unas 10 veces por segundo (cada cambio de entrada reinicia la conversión de 50 ms), más
+    que las 5 actualizaciones por segundo del sensor.
+  - **Pendiente:** valor del multímetro para medir el error absoluto de la cadena; repetir
+    con una pila; repetir con el sensor de oxígeno.
+- **Siguiente:** con el voltaje de muestra (pila medida con multímetro) conectado a
+  AIN0 (+) y AIN1 (−, y a GND), correr `medir_adc.py --comparar --referencia-v <valor>`
+  y registrar aquí el resultado para fijar la configuración.
+- **Pendiente:** acceso SSH a la Raspberry Pi, confirmar que el HAT está instalado y SPI
+  habilitado, y consultar a Hummingbird la conexión recomendada de P3 con un ADC externo.
+
+---
+
+## D-026 — Raspberry Pi de desarrollo: estado inicial, acceso y primera carga
+
+- **Fecha:** 2026-10-08
+- **Equipo:** Raspberry Pi de desarrollo en la red local, dedicada a G2 (versión
+  completamente nueva; sin firmware del analizador anterior), con el HAT ADS1263
+  instalado.
+- **Acceso:** por SSH con una llave propia de este PC, instalada el 2026-10-08. Los
+  datos de acceso y el procedimiento para revocarla están en las notas locales (no
+  publicadas). La seguridad de la cuenta de usuario (contraseña y acceso por
+  contraseña) se endurecerá más adelante, por decisión del usuario.
+- **Estado inicial verificado (solo lectura):**
+  - Modelo **Raspberry Pi 3 Model B Plus Rev 1.4** (no 3 B), aarch64, 905 MB de RAM.
+  - Debian 13 (Trixie) con **escritorio** (`graphical.target`, `lightdm`), Python 3.13.5,
+    SQLite 3.46.1, pip 25.1.1; 15 GB de tarjeta, 7.9 GB libres.
+  - Ya instalados: `git`, `python3-venv`, `python3-spidev`, `python3-lgpio`, `i2c-tools`.
+    Faltan: `sqlite3` (cliente), `tmux`.
+  - **SPI, I²C (GPIO 2 y 3) y UART no están habilitados** (no existen `/dev/spidev*`,
+    `/dev/i2c-1` ni `/dev/serial*`); la consola serie sí está habilitada, lo que choca
+    con la pantalla Nextion. El `i2c-2` que aparece es el del puerto HDMI.
+  - Sin reloj de tiempo real (`/dev/rtc*`); la hora está sincronizada por NTP
+    (America/Bogota) gracias a Internet.
+  - Servicios en marcha innecesarios para un equipo sin pantalla de escritorio:
+    `lightdm`, `bluetooth`, `avahi-daemon`, `rpcbind`, `nfs-blkmap`, `udisks2`,
+    `accounts-daemon`. ZeroTier no está activo.
+  - Sin subtensión (`throttled=0x0`), 46 °C. `sudo` pide contraseña.
+  - Tiene Internet (GitHub responde 200).
+- **Primera carga (2026-10-08):** código copiado a `~/g2/dev` (src, tests, tools) y
+  **las 62 pruebas pasan en la Pi** (Python 3.13.5, SQLite 3.46.1), además de en el PC
+  (Python 3.10, SQLite 3.39). Es la primera verificación en el hardware real.
+- **Preparación propuesta (cambia el sistema; pendiente de confirmar, requiere
+  reinicio):** cambiar la contraseña de `pi`; pasar a modo sin escritorio y apagar
+  `lightdm`; habilitar SPI e I²C; liberar el UART principal para la Nextion
+  (`enable_uart=1`, `dtoverlay=disable-bt`, sin consola serie); deshabilitar `bluetooth`,
+  `avahi-daemon`, `rpcbind` y `nfs-blkmap`; instalar `sqlite3` y `tmux`. Todo debe quedar
+  en un script de aprovisionamiento repetible dentro del repositorio.
+
+- **Aprovisionamiento aplicado (2026-10-08), con aprobación del usuario:** script
+  `scripts/aprovisionar_pi.sh` (repetible; con `--verificar` solo informa). Habilitó SPI e
+  I²C, activó el UART por hardware, quitó la consola serie, desactivó el Bluetooth
+  (`dtoverlay=disable-bt` y servicio) e instaló `sqlite3` y `tmux`. Guarda copias
+  `config.txt.g2-original` y `cmdline.txt.g2-original` para volver atrás. Se reinició la
+  Pi y se verificó: existen `/dev/spidev0.0`, `/dev/i2c-1` y `/dev/serial0 → ttyAMA0` (el
+  UART principal PL011), el Bluetooth no existe y no hay consola serie.
+- **No se tocó, por decisión del usuario:** la contraseña de `pi` (se cambiará más
+  adelante, y después se desactivará el acceso por contraseña) y el escritorio `lightdm`
+  (se conserva por si hace falta conectarse directamente; se apagará cuando el equipo
+  esté estable). Quedan sin decidir `avahi-daemon`, `rpcbind` y `nfs-blkmap`.
+- **ADS1263 detectado:** `tools/banco/sonda_ads1263.py` reinicia el chip y lee tres
+  registros: ID = 0x23 (dispositivo 1 = ADS1263), POWER = 0x11 e INTERFACE = 0x05, los
+  valores de fábrica. Confirma que el HAT está bien conectado y que CS (GPIO 22), RESET
+  (GPIO 18) y SPI0 funcionan. El bus I²C 1 está vacío (aún no hay periféricos).
+
+---
+
 ## Decisiones pendientes
 
+- Probar las alertas por correo con MySQL y la cuenta real, y decidir cuándo
+  fusionar la rama `feature/alertas-correo` (D-021).
+- Seguridad de la plataforma: confirmar el plan por etapas y las columnas y
+  tablas nuevas (D-022).
+- Proveedor de correo y de mensajería, trámite de WhatsApp Business y
+  protocolo de comandos remotos con la plataforma (D-019).
+- Confirmar con un experto en regulación las normas y el registro
+  sanitario aplicables a la versión hospitalaria (D-017).
 - Configuración del Drive de la empresa para los respaldos: proveedor,
   cuenta, carpeta, autenticación, frecuencia, cifrado y retención (D-015).
 - Valor numérico del mínimo de operación del disco (D-013).
@@ -392,5 +823,6 @@ descartadas, consecuencias, fuente.
 - Gestión de WiFi (NetworkManager).
 - Sistema de archivos de solo lectura y partición de datos.
 - Actualización remota firmada con vuelta atrás.
-- Sensores periféricos (temperatura, humedad, presión, vibración): modelos
-  concretos y su conexión.
+- Confirmar las funciones de los relés, definir los dimensionamientos para AC y
+  elegir los modelos de los periféricos (D-023, `HARDWARE.md`); verificar en el
+  banco la lectura diferencial del sensor con el ADS1263.

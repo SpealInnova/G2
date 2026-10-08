@@ -1,0 +1,4 @@
+# Los scripts de shell y los SQL deben conservar finales de linea Unix (LF), tambien en Windows:
+# un script con CRLF falla en la Raspberry Pi.
+*.sh  text eol=lf
+*.sql text eol=lf
