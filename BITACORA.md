@@ -163,3 +163,11 @@ decisión están en `MEMORIA_TECNICA.md`.
 - Herramientas `capturar_adc.py` y `analizar_ruido.py`; el ruido de la fuente de prueba
   es lento (< 0.5 Hz) y no se puede filtrar sin quitar señal. Método para fijar el
   corte del filtro registrado en D-025.
+- Se construyó la base de datos (D-028): catálogo de 23 claves de configuración, capa de
+  datos `Almacen`, relojes y herramienta `g2ctl`. 132 pruebas (PC y Pi). Base real creada en
+  la Pi (`~/g2/datos/g2.db`, esquema 4) con la configuración por defecto y los dos sensores
+  dados de alta; la cadena de auditoría verifica OK. Pendiente de subir a GitHub.
+- Diagrama entidad-relación de la base de datos: `DIAGRAMA_ER.md`, generado desde el esquema real
+  con `tools/generar_diagrama_er.py` (sintaxis Mermaid validada con el analizador de Mermaid).
+  Dos diagramas: el modelo con sus claves foráneas y los mecanismos transversales (cola de
+  envío y cadena de auditoría). Se regenera después de cada migración.

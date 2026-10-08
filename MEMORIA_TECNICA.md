@@ -840,9 +840,56 @@ descartadas, consecuencias, fuente.
   de O₂; retardo antes de alarmar 10 s; histéresis 0.5 % de O₂; alarma por sensores
   discrepantes con diferencia mayor que 0.5 %; salud periódica cada 30 min; disco: aviso al
   bajar de 20 % o 2 GB libres y crítico al bajar de 10 % o 1 GB.
-- **Pendiente:** las claves exactas de `config` y sus tipos (se definen al construir
-  `g2-core`), y la regla de qué hacen las alarmas con los dos sensores (alarma por sensor o
-  por el peor de los dos).
+- **Claves definidas (2026-10-08):** ver D-028 (`src/g2/configuracion/catalogo.py`).
+- **Pendiente:** la regla de qué hacen las alarmas con los dos sensores (alarma por
+  sensor o por el peor de los dos); el usuario está revisando la lógica de alarmas.
+
+---
+
+## D-028 — Capa de datos, catálogo de configuración y base real en la Pi
+
+- **Fecha:** 2026-10-08
+- **Qué se construyó:**
+  - `src/g2/configuracion/catalogo.py`: **única fuente de verdad** de la configuración: 23
+    claves con tipo, valor por defecto (D-027), límites, unidad, descripción y quién puede
+    cambiarlas (`pantalla`, `plataforma`, `local`). Reglas entre claves: `alarma.o2_bajo_pct` <
+    `alarma.o2_alto_pct` y los umbrales críticos de disco por debajo de los de aviso. Los
+    umbrales de oxígeno se pueden cambiar desde pantalla y plataforma; la identidad del equipo
+    (`equipo.id`, `equipo.nombre`) y la marca interna `sistema.apagado_limpio` solo localmente.
+  - `src/g2/almacenamiento/almacen.py` (clase `Almacen`): **la única vía de escritura del
+    núcleo.** Cada operación es una transacción (`BEGIN IMMEDIATE`); los registros llevan solos
+    los datos de tiempo (hora UTC, reloj confiable, arranque, tiempo monotónico); consultas con
+    parámetros; la cola de envío y la cadena de auditoría las hacen los disparadores.
+    Operaciones: apertura con migraciones y siembra de configuración, arranque y apagado limpio,
+    configuración con validación e historial, sensores y calibración, lecturas con la
+    calibración vigente, salud, eventos con agrupación de repetidos (`evento.agrupar_s`), ciclo
+    de vida de alarmas (abrir sin duplicar, pico, acuse, cierre), comandos idempotentes por
+    `uuid` y resumen del estado de la base.
+  - `src/g2/tiempo.py`: relojes (`RelojSistema` consulta a systemd si la hora está sincronizada;
+    `RelojPrueba` para las pruebas).
+  - `src/g2/ctl.py` (`python3 -m g2.ctl`): herramienta por SSH con `bd-crear`, `bd-estado`,
+    `bd-verificar`, `config-listar`, `config-fijar`, `sensores-listar`, `sensor-agregar` y
+    `sensor-serie`. La ruta de la base sale de `--bd`, de `G2_BD` o de `~/g2/datos/g2.db`.
+- **Decisiones de diseño:**
+  - Escribir una clave con el mismo valor no deja nada en el historial (evita ruido y
+    revisiones inútiles en la cadena de auditoría); lo mismo con `actualizar_pico`.
+  - El estado interno (`sistema.apagado_limpio`) se guarda sin historial: no es un cambio de
+    configuración.
+  - El habilitado de cada sensor vive en la tabla `sensor` (no en `config`), para que haya una
+    sola fuente de verdad; cambiarlo deja un evento (`SEN_HABILITADO` / `SEN_DESHABILITADO`).
+  - Las herramientas que no son el núcleo reutilizan el último arranque o crean uno
+    (`g2ctl <versión>`), ya que todo registro exige un arranque. Cuando exista `g2-core`, los
+    cambios irán por su socket local (D-009).
+- **Pruebas:** 47 nuevas (catálogo y capa de datos), 132 en total; pasan en el PC y en la Pi.
+  Incluyen una prueba de que la cadena de auditoría queda coherente tras un uso completo.
+- **Base real creada en la Pi (2026-10-08):** `~/g2/datos/g2.db` (esquema versión 4, 216 KiB, modo
+  WAL), con las 23 claves sembradas en sus valores por defecto, **Sensor 1** (`ads1263:0-1`) y
+  **Sensor 2** (`ads1263:2-3`) dados de alta (Paracube Micro 01117707, 10 mV por %; serie
+  pendiente: `sensor-serie`). La cadena de auditoría verifica OK. Es la base de desarrollo; la
+  definitiva irá en `/var/lib/g2` con un usuario de servicio y permisos restringidos (el archivo
+  actual es legible por todos los usuarios de la Pi).
+- **Pendiente:** la lógica de alarmas (en revisión por el usuario), `g2-core`, y el catálogo de
+  claves de la plataforma y la pantalla (URL, sincronización) cuando se diseñe `g2-uplink`.
 
 ---
 
