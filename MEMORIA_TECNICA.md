@@ -749,6 +749,69 @@ descartadas, consecuencias, fuente.
   ≈ 0.35 / 11 s ≈ 0.03 Hz): un corte de 0.2 Hz solo baja el ruido a 236 µV y exigiría unos
   800 µF con 1 kΩ; (2) el filtrado, si hace falta, va en digital; (3) el análisis debe
   repetirse con el sensor de oxígeno real, cuyo ruido es otro.
+- **Prueba A/B: ¿el ruido lo mete la fuente? (2026-10-08).** La fuente de prueba es un divisor
+  de dos resistencias iguales alimentado desde el pin de 3.3 V de la Raspberry Pi (≈ 1.66 V).
+  Se capturaron 45 s a 100 SPS en tres condiciones (`tools/banco/comparar_capturas.py`):
+
+  | | Divisor en reposo | Divisor con la Pi a plena carga | Piso del ADC (entradas a tierra) |
+  |---|---|---|---|
+  | Desviación | 470 µV | 650 µV | 6.4 µV |
+  | Pico a pico | 2751 µV | 2660 µV | 51 µV |
+  | Promedio | 1.659017 V | 1.658664 V | 0.000373 V |
+  | Ruido < 1 Hz (rms) | 183 y 242 µV | 265 y 331 µV | 0.3 y 1.2 µV |
+  | Allan a 1 s / 10 s | 252 / 158 µV | 322 / 293 µV | 1.1 / 0.2 µV |
+
+  Conclusión: **la fuente domina el ruido** (73 veces el piso del ADC) y **depende de la carga
+  de la Pi**: con los 4 núcleos al máximo el ruido por debajo de 1 Hz sube ~40 % y el promedio
+  baja 0.35 mV, lo que apunta al riel de 3.3 V (el ADC usa su referencia interna de 2.5 V, con
+  rechazo de alimentación de 80 a 90 dB, así que no explica ese corrimiento). Promediar más no
+  ayuda (Allan sin descenso), por ser ruido lento. Limitación: la carga también calentó la placa
+  (60 °C, límite suave de temperatura activo) y parte de la deriva puede ser térmica de las
+  resistencias. Para confirmarlo del todo: repetir con una pila o una referencia de tensión
+  dedicada en lugar del pin de 3.3 V.
+- **Prueba A/B con una pila como fuente (2026-10-09).** Se repitió la prueba con el divisor
+  (4 resistencias iguales) alimentado por una pila de 10 V, a ≈ 1.99 V, en reposo y con la Pi a
+  plena carga (45 s a 100 SPS cada una):
+
+  | | Divisor desde 3.3 V de la Pi | Divisor con pila |
+  |---|---|---|
+  | Desviación en reposo / con carga | 470 / 650 µV | **92 / 86 µV** |
+  | Ruido < 0.1 Hz (rms) | 183 y 265 µV | **7.0 y 7.0 µV** |
+  | Ruido 0.1–1 Hz (rms) | 242 y 331 µV | **2.4 y 3.1 µV** |
+  | Ruido 1–10 Hz (rms) | 161 y 180 µV | **2.8 y 6.8 µV** |
+  | Pico a pico | 2751 / 2660 µV | 370 / 398 µV |
+
+  Conclusión: **el ruido venía del riel de 3.3 V de la Pi.** Con la pila, el ruido por encima de
+  0.1 Hz es del orden del piso del ADC (0.3 a 5 µV rms por banda) y **no cambia con la carga de la
+  Pi**: la cadena de medición (ADC, su alimentación, el cableado) es insensible a lo que haga el
+  procesador. Lo que queda en la desviación (≈ 90 µV) es una **deriva lenta** (≈ −300 µV en 45 s, de
+  la pila al descargarse y de la temperatura de las resistencias), no ruido: explica el pico a pico
+  de ~370 µV y el valor de Allan a 10 s (≈ 48 µV). Con esta fuente el ruido total es de ~0.009 % de
+  O₂ (a 10 mV por %), muy por debajo de la especificación del sensor (< 0.2 %). Pendiente: el valor
+  del multímetro para esta fuente (error absoluto).
+- **Comparación con el multímetro, fuente de pila (2026-10-09):** el usuario midió 1.988 V entre IN0
+  e IN1. El ADC leyó 1990.2 y 1989.8 mV en las capturas anteriores y **1985.8 mV (tres mediciones de
+  200 muestras, desviación 5 a 6 µV, el piso del ADC) minutos después**: la fuente derivó unos 4.4 mV
+  (pila al descargarse y temperatura de las resistencias). Como las lecturas no fueron simultáneas,
+  1.988 V queda entre las dos del ADC y no se puede calcular el error absoluto: lo único que se
+  concluye es que ADC y multímetro coinciden dentro de la deriva de la fuente (≈ ±2 mV, ±0.1 %).
+  Además, **tanto el ADC (40 MΩ) como el multímetro (≈ 10 MΩ) cargan el divisor**: con
+  resistencias de 100 kΩ el efecto sería de ~0.2 % y ~0.8 %; hay que conocer los valores. Para
+  validar la exactitud absoluta: leer el multímetro y el ADC al mismo tiempo, con una fuente de baja
+  impedancia (resistencias de 10 kΩ o menos, o una pila directa).
+- **Comparación simultánea con el multímetro (2026-10-09, 15:30 a 15:31):** multímetro 1.987 V (en
+  paralelo, resolución de 1 mV) frente a **1985.24 mV del ADC** (400 muestras en 20 s): el ADC lee
+  **1.76 mV (−0.09 %) menos**. El resultado repite el de la fuente de 1.660 V (−0.08 %): una
+  diferencia **proporcional y del mismo signo en dos fuentes y dos niveles**, compatible con un
+  error de ganancia (la referencia interna del ADC tiene ±0.1 % típico y ±0.2 % máximo; o la
+  calibración del propio multímetro, cuya tolerancia típica es mayor, ≈ ±0.5 %). La carga del
+  divisor no lo explica (el multímetro, de menor impedancia, leería por debajo, no por encima).
+  Con el multímetro conectado el ruido subió de 5 a 109 µV (la medición del multímetro inyecta
+  ruido). **Efecto en el sensor:** un error de −0.09 % de la lectura equivale a 0.02 % de O₂ en
+  aire y 0.09 % de O₂ al 100 %, dentro de la especificación del sensor (±0.2 %), pero el error
+  máximo de la referencia (±0.2 %) sumaría 0.2 % de O₂ al 100 %. Se puede corregir con una
+  referencia de tensión calibrada (la exactitud absoluta del ADC no se puede certificar con este
+  multímetro); queda como mejora opcional.
 - **Método para fijar la frecuencia de corte:** capturar una serie larga (≥ 90 s) con el
   sensor real, calcular el espectro y la desviación de Allan, estimar el ancho de banda de la
   señal (≈ 0.35 / tiempo de respuesta) y elegir un corte ≥ 3 veces mayor con un retardo

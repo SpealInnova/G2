@@ -171,3 +171,24 @@ decisión están en `MEMORIA_TECNICA.md`.
   con `tools/generar_diagrama_er.py` (sintaxis Mermaid validada con el analizador de Mermaid).
   Dos diagramas: el modelo con sus claves foráneas y los mecanismos transversales (cola de
   envío y cadena de auditoría). Se regenera después de cada migración.
+- Prueba A/B del ruido de la fuente de prueba (divisor desde el pin de 3.3 V de la Pi): el
+  ruido es 73 veces el piso del ADC y sube con la carga de la Pi; se agregó
+  `tools/banco/comparar_capturas.py`. Detalle en D-025.
+
+## 2026-10-09
+
+- La Pi dejó de responder en su dirección y, tras desenchufarla y volver a enchufarla,
+  reapareció con otra IP asignada por DHCP. SSH avisó que la llave del servidor había
+  cambiado para esa IP; se comprobó que la huella era idéntica a la de la Pi de G2, así que
+  era el mismo equipo (la llave guardada para esa IP era de otro equipo). El ahorro de
+  energía del WiFi siguió desactivado tras el reinicio. Se recomienda reservar la IP en el
+  router o usar el nombre `raspberry.local` (avahi).
+- Prueba A/B con pila de 10 V y divisor de 4 resistencias (≈ 1.99 V): el ruido sobre 0.1 Hz
+  queda al nivel del piso del ADC y no cambia con la carga de la Pi; el ruido de la prueba
+  anterior venía del riel de 3.3 V. Detalle en D-025.
+- Multímetro 1.988 V frente al ADC (1990.2 mV y luego 1985.8 mV): no fueron simultáneas y la
+  fuente derivó 4.4 mV; no se puede calcular el error absoluto. Se pidió medir al mismo
+  tiempo y conocer las resistencias (carga del divisor). Detalle en D-025.
+- Comparación simultánea con el multímetro (1.987 V): el ADC lee 1985.24 mV (−0.09 %), igual
+  diferencia proporcional que con la fuente de 1.660 V (−0.08 %). Compatible con el error de
+  ganancia de la referencia interna o con la tolerancia del multímetro (D-025).
