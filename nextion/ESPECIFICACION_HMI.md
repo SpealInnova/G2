@@ -149,11 +149,11 @@ Tipo *Text* salvo donde se indica. `xcen`/`ycen` = 1 (centrado) salvo que se ind
 | `tit_1` | Text | 32 | 84 | 200 | 36 | 1 | SENSOR 1 | texto_suave | crop image | `xcen`=0 |
 | `o2_1` | Text | 32 | 124 | 260 | 130 | 3 | --.- | texto | crop image | `xcen`=2 (derecha) |
 | `uni_1` | Text | 296 | 196 | 84 | 40 | 1 | %O2 | texto_suave | crop image | `xcen`=0 |
-| `est_1` | Text | 32 | 268 | 344 | 68 | 2 | SIN SEÑAL | blanco | solid, bco = inactivo | la Pi cambia texto y colores |
+| `est_1` | Text | 32 | 268 | 344 | 68 | 2 | SIN SEÑAL | texto_suave | solid, bco = tarjeta | la Pi cambia texto y colores |
 | `tit_2` | Text | 424 | 84 | 200 | 36 | 1 | SENSOR 2 | texto_suave | crop image | `xcen`=0 |
 | `o2_2` | Text | 424 | 124 | 260 | 130 | 3 | --.- | texto | crop image | `xcen`=2 |
 | `uni_2` | Text | 688 | 196 | 84 | 40 | 1 | %O2 | texto_suave | crop image | `xcen`=0 |
-| `est_2` | Text | 424 | 268 | 344 | 68 | 2 | SIN SEÑAL | blanco | solid, bco = inactivo | |
+| `est_2` | Text | 424 | 268 | 344 | 68 | 2 | SIN SEÑAL | texto_suave | solid, bco = tarjeta | |
 | `aviso` | Text | 20 | 368 | 760 | 40 | 1 | Sin alarmas | texto | solid, bco = tarjeta | línea de alarmas y mensajes |
 | `b_alarmas` | Button | 26 | 427 | 108 | 42 | 4 | Alarmas | texto | solid, bco = boton | `bco2` = boton_pulsado |
 | `b_config` | Button | 159 | 427 | 108 | 42 | 4 | Config | texto | solid, bco = boton | `bco2` = boton_pulsado |
@@ -190,6 +190,12 @@ Y al soltar:
 | Página `principal`,   Postinitialize    | `printh 65 00 FE 00 FF FF FF` |
 
 Ningún otro evento lleva código: los demás componentes son solo de lectura y no suenan.
+
+### Largo máximo de los textos (`txt_maxl`)
+
+El atributo `txt_maxl` (por defecto 10) es el máximo de letras que acepta el componente: lo que la
+Pi escriba de más se **corta sin avisar**. Valores: `aviso` 60, `est_1` y `est_2` 12, `red_s` 12,
+`cola_s` 14; `hora`, `o2_1`, `o2_2` y los demás, 10. La Pi no debe escribir textos más largos.
 
 ### Qué escribirá la Pi
 

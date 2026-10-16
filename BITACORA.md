@@ -217,3 +217,6 @@ decisión están en `MEMORIA_TECNICA.md`.
 - Corrección: la variable de volumen de la Nextion es `volume` (no `vol`); verificado en el juego
   de instrucciones oficial y corregida en la especificación del HMI.
 - Git LFS activado para `*.HMI` y `*.tft` (versionado de los programas de la pantalla, D-029).
+- Herramienta tools/publicar_pantalla.py (hito de la pantalla): copia el .tft a nextion/build/ con su
+  version y registra las huellas SHA-256 en nextion/MANIFIESTO.md; una version publicada es inmutable.
+  Especificacion: largo maximo de los textos (txt_maxl) y estado inicial de est_*. 146 pruebas pasan.

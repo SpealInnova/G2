@@ -16,7 +16,7 @@ Nextion y plataforma web **sp-peek.com**. Primera versión para **hospitales**.
 | Raspberry Pi preparada (SPI, I²C, UART) y herramienta `g2ctl` | **Hecho** |
 | Núcleo `g2-core` (lectura, promedio, alarmas, almacenamiento) | Siguiente |
 | Servicio de envío a la plataforma | Por construir (diseño en la memoria técnica) |
-| Pantalla Nextion | En construcción: especificación, fondo, fuentes y sonido listos; página principal en el editor |
+| Pantalla Nextion | Página principal lista (v0.1.0); faltan teclado, alarmas, configuración, red, calibración y sistema |
 | Alertas por correo en la plataforma | Construidas en una rama de la plataforma, sin publicar |
 
 ## Para empezar
@@ -58,7 +58,12 @@ publicados (no se edita a mano).
 
 ### 2026-10-16
 
-- **Pantalla Nextion: primer proyecto del editor (.HMI) y su compilado (.tft) con Git LFS**
+- **Pantalla Nextion v0.1.0: página principal terminada y herramienta de versiones**
+  - Página principal de la pantalla (versión 0.1.0): fondo con el logotipo de SPEAL, tarjetas de los dos sensores, línea de avisos y 6 botones con pitido de pulsación; protocolo de eventos versión 1.
+  - tools/publicar_pantalla.py: copia el .tft compilado a nextion/build/ con su versión y registra las huellas SHA-256 en nextion/MANIFIESTO.md; una versión publicada no se puede sobrescribir.
+  - Especificación del HMI: estado inicial de los textos de estado y largo máximo de los textos (txt_maxl).
+  - Programas de la pantalla (.HMI y .tft) con Git LFS; etiqueta pantalla-v0.1.0.
+- **Pantalla Nextion: primer proyecto del editor (.HMI) y su compilado (.tft) con Git LFS** (`2216bd2`)
   - Proyecto g2.HMI del Nextion Editor y su compilado g2.tft, versionados con Git LFS (primera subida): página principal en construcción, con fondo, fuentes y sonido de pulsación de la especificación.
 - **Pantalla Nextion: especificación del HMI, fondo, fuentes y sonido; novedades en el README** (`61d6cf8`)
   - Especificación del HMI (nextion/ESPECIFICACION_HMI.md): convenciones, protocolo con códigos propios de evento, página principal, pitido de pulsación y reglas del editor.
