@@ -23,6 +23,7 @@ class PruebasCatalogo(unittest.TestCase):
             "alarma.o2_retardo_s": "10",
             "alarma.o2_histeresis_pct": "0.5",
             "alarma.discrepancia_pct": "0.5",
+            "alarma.acuse_silencio_s": "120",
             "salud.intervalo_min": "30",
             "salud.disco_aviso_libre_pct": "20.0", "salud.disco_aviso_libre_gb": "2.0",
             "salud.disco_critico_libre_pct": "10.0", "salud.disco_critico_libre_gb": "1.0",

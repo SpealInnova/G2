@@ -192,3 +192,28 @@ decisión están en `MEMORIA_TECNICA.md`.
 - Comparación simultánea con el multímetro (1.987 V): el ADC lee 1985.24 mV (−0.09 %), igual
   diferencia proporcional que con la fuente de 1.660 V (−0.08 %). Compatible con el error de
   ganancia de la referencia interna o con la tolerancia del multímetro (D-025).
+- Se ordenó la lista de pendientes de la memoria técnica (se quitaron los ya resueltos) y se
+  agregó la sección "Tareas pendientes de hardware y operación".
+- Propuesta de trabajo con la pantalla Nextion (D-029), con preguntas abiertas.
+- Respuestas del usuario sobre la Nextion (D-029): construirá el `.HMI` con ayuda; PIN por
+  defecto y asignable desde la plataforma; se conservan los reportes a USB; solo español.
+- README como página principal con novedades por fecha, generadas desde `git log` (D-030).
+- Modelo de la pantalla en el editor de Nextion: NX8048P050_011 (por confirmar con la etiqueta o
+  con `tools/banco/sonda_nextion.py`; sin respuesta porque aún no está conectada) (D-029).
+- Ajustes de pantalla en el editor de Nextion: horizontal 0° y codificación iso-8859-1; reglas
+  de texto derivadas (D-029).
+- Proyecto `nextion/g2.HMI` creado por el usuario en el repositorio. Se escribió la etapa 1 de la
+  especificación del HMI (convenciones, protocolo con códigos propios y página principal) en
+  `nextion/ESPECIFICACION_HMI.md` (D-029).
+- Fondo de la pantalla: imagen de IA ajustada a la cuadrícula con `tools/ajustar_fondo_nextion.py`
+  (`nextion/fondos/principal.png`); especificación del HMI actualizada y con anchos corregidos.
+- Logo de SPEAL integrado en la barra del fondo (110x44 px, compuesto sobre el color de la barra porque la
+  pantalla no maneja transparencia); el titulo y los indicadores de la barra se desplazaron. Fuentes
+  generadas en nextion/fonts (arial24, arial32n, arial40n, arial100n, arial24n).
+- Botón Acusar (D-031): silencia solo el sonido de la pantalla, los relevos no se desactivan, el
+  sonido vuelve a los 2 minutos si la alarma persiste. Nueva clave `alarma.acuse_silencio_s` (120 s).
+- Pitido de pulsación de botones: sonido `nextion/sonidos/pulsacion.wav` (generado con
+  `tools/generar_sonido_pulsacion.py`) y su uso en la especificación del HMI (canal 1 para toques).
+- Corrección: la variable de volumen de la Nextion es `volume` (no `vol`); verificado en el juego
+  de instrucciones oficial y corregida en la especificación del HMI.
+- Git LFS activado para `*.HMI` y `*.tft` (versionado de los programas de la pantalla, D-029).

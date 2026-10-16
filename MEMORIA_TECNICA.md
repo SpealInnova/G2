@@ -956,6 +956,169 @@ descartadas, consecuencias, fuente.
 
 ---
 
+## D-029 — Pantalla Nextion: forma de trabajo (PROPUESTA, preguntas abiertas)
+
+- **Fecha:** 2026-10-09
+- **Equipo:** Nextion NX8048P050-011R (serie Intelligent, 5", 800×480, táctil resistiva, con
+  altavoz) conectada al UART principal de la Pi (`/dev/serial0`), que ya está liberado (D-026).
+  Audio: el de la Nextion, comandado desde la Pi (D-020).
+- **Principio:** la pantalla es una **vista y un teclado**; no decide nada. Toda la lógica vive en
+  el firmware (D-024). El servicio **`g2-ui`** es el único dueño del puerto serie (D-009).
+- **Flujo de datos:**
+  - `g2-core` publica su estado en vivo (lecturas de cada segundo, alarmas, calibración en curso)
+    por su socket local; `g2-ui` lo toma y actualiza solo los campos que cambian, cada
+    `muestreo.intervalo_pantalla_s` (1 s). Lo histórico y la configuración los lee de la base.
+  - Una acción en la pantalla (cambiar un umbral, deshabilitar un sensor) llega a `g2-ui`, que la
+    valida y se la pide a `g2-core`; este la aplica con `Almacen.config_fijar(origen="pantalla")` y
+    la pantalla muestra lo que `g2-core` confirma, no lo que tecleó el usuario. Si la plataforma
+    cambia el mismo valor, gana el más reciente y la pantalla se refresca (D-028).
+  - Si la pantalla se reinicia sola, `g2-ui` la vuelve a sincronizar completa. Si `g2-core` cae, la
+    pantalla muestra "núcleo caído" y rechaza cambios (D-012).
+- **Pantallas previstas (según los requisitos del usuario):** principal (lecturas de los dos
+  sensores, estado de alarmas y de red); alarmas (umbrales bajo y alto, acuse, historial);
+  configuración (intervalos de guardado y de visualización, habilitar o deshabilitar sensores);
+  red (estado de internet, IP asignada por DHCP y conexión a una red WiFi con nombre y contraseña
+  tecleados en la pantalla, aplicada por NetworkManager con reversión automática, D-024);
+  calibración (guiada: aire a 20.9 %, verificación de estabilidad, gas y certificado, corrección de
+  cero registrada con su autor); sistema (estado de la base y de la cola de envío, reinicios,
+  salud de la Pi, versión).
+- **Protocolo:** el de la propia Nextion, con las lecciones del equipo anterior (`CONTEXTO.md` §4):
+  eventos de toque por `printh 65 <página> <id> 00 FF FF FF` como primera línea del evento de
+  soltar, con "Send Component ID" desmarcado (borrar un objeto renumera los ids y rompe el
+  protocolo sin avisar); lectura de textos con `get` (respuesta `0x70`); tabla de ids versionada
+  junto con el `.HMI`. Una versión de protocolo en la pantalla que `g2-ui` comprueba al arrancar.
+- **Sonido:** el de navegación (toques) lo reproduce la propia pantalla desde su código, sin ir y
+  volver a la Pi; los de alarma los ordena `g2-ui` con prioridad. Si `g2-ui` falla no suena la
+  alarma por la pantalla (el relé de alarma sigue funcionando).
+- **Cómo se trabaja por SSH:** el diseño gráfico (`.HMI`) se hace en el editor de Nextion, que es
+  una aplicación de Windows y no se puede usar por SSH. El `.HMI` y el `.tft` compilado se versionan
+  en el repositorio. La carga del `.tft` a la pantalla se hará desde la Pi por el puerto serie
+  (`g2ctl pantalla-cargar`, protocolo de carga de Nextion), sin quitar la tarjeta. Para probar sin
+  pantalla se escribe un emulador de la Nextion (D-024).
+- **Modelo en el editor de Nextion (2026-10-09):** en la serie *Intelligent* del editor, el modelo que
+  corresponde a la pantalla del equipo anterior (NX8048P050-011R) es **NX8048P050_011**: 5.0",
+  800×480, Flash 128 MB, RAM 524288 B (512 KB) y 200 MHz. Los tres modelos NX8048 (4.3", 5.0" y 7.0")
+  comparten resolución de 800×480, pero el `.tft` debe corresponder al modelo exacto de la
+  pantalla. El sufijo R o C de la etiqueta indica el tipo de táctil (resistivo o capacitivo) y no
+  cambia el modelo del editor. **Por confirmar** con la etiqueta de la pantalla comprada o con
+  `tools/banco/sonda_nextion.py`, que le pregunta el modelo por el UART (probada: sin respuesta
+  porque aún no está conectada). Límite de diseño a tener en cuenta: 512 KB de RAM para variables.
+- **Ajustes de pantalla en el editor (2026-10-09), propuesta:**
+  - **Dirección:** 0° horizontal (800×480, apaisada), salvo que la caja del equipo obligue a montar
+    la pantalla al revés (entonces 180°; se corrige aquí y no en el código). 90° y 270° dan
+    480×800 vertical y no se usarán.
+  - **Codificación de caracteres: iso-8859-1 (Latin-1).** Cubre todo el español (á é í ó ú ñ ü ¿ ¡)
+    y además ° (grados), µ, ± y ² (se usarán en °C y µV). Cada carácter ocupa un byte, lo que
+    simplifica el protocolo y los límites de longitud de los textos (`txt_maxl` cuenta bytes). Se
+    descarta UTF-8 por ahora (solo español).
+  - **Reglas que se derivan:** (a) las fuentes se generan con el *Font Generator* en la **misma
+    codificación** del proyecto, incluyendo los caracteres 32 a 255; (b) `g2-ui` codifica y
+    decodifica los textos con `latin-1` (Python `encode("latin-1")`); (c) en pantalla no se usan
+    caracteres fuera de Latin-1: se escribe **O2** (no O₂), y las palabras "aprox.", "ohmios" y
+    "mayor o igual" en lugar de ≈, Ω y ≥; (d) cambiar la codificación después obliga a rehacer
+    las fuentes y revisar todos los textos.
+- **Proyecto en el editor (2026-10-09):** el usuario creó `nextion/g2.HMI` dentro del repositorio, con
+  el modelo `NX8048P050_011`, codificación `iso-8859-1` y una sola página (`page0`). El archivo pesa
+  unos 7 MB y el editor lo tiene bloqueado mientras está abierto, así que **se sube a GitHub solo en
+  hitos y con el editor cerrado** (no en cada commit) para no inflar el repositorio. La
+  especificación de construcción está en `nextion/ESPECIFICACION_HMI.md` (etapa 1: convenciones,
+  protocolo y página principal).
+- **Fondo de la pantalla (2026-10-09):** la imagen de fondo de la página principal la generó una IA
+  a partir de un prompt con las medidas de la especificación. Salió con la proporción correcta
+  pero con las zonas comprimidas en vertical (tarjetas hasta y=291 en vez de 352; botones en
+  410–446 en vez de 424–472). En lugar de volver a generarla, `tools/ajustar_fondo_nextion.py`
+  la estira por bandas a la cuadrícula y quita la marca de agua, que quedaba aplastada. La
+  imagen no lleva texto (el español y los valores los escribe la Pi). Al usar fondo, las
+  tarjetas y la barra ya no son componentes; los textos sobre ellas usan `crop image`. De
+  paso se corrigieron anchos de la especificación que no cabían (texto de botones, `COLA 1250`,
+  estado `DESHABILITADO` → `APAGADO`).
+- **Pitido de pulsación (2026-10-16, pedido del usuario):** cada botón emite un pitido al pulsarse. La
+  pantalla tiene altavoz sin zumbador (`CONTEXTO.md`), así que `beep` no sirve: se reproduce un
+  archivo de audio corto (`nextion/sonidos/pulsacion.wav`, generado por
+  `tools/generar_sonido_pulsacion.py`) con `play 1,0,0` en el *Touch Press* de cada botón. Se usa el
+  canal 1 para los toques y se reserva el canal 0 para las alarmas. Lo reproduce la propia pantalla
+  (no la Pi) para que suene al instante. A confirmar con la pantalla real: formato de audio
+  aceptado, existencia del canal 1 y volumen.
+- **Versionado de los programas de la pantalla (2026-10-16, aprobado por el usuario):**
+  - Lo pequeño va en Git normal y siempre: especificación, fuentes (`nextion/fonts/`), imágenes, sonidos
+    y los scripts que los generan.
+  - El proyecto `.HMI` (~9 MB y creciendo) y el compilado `.tft` van con **Git LFS** (activado con
+    `git lfs install` y `git lfs track "*.HMI" "*.tft"`): el repositorio guarda un puntero y el archivo
+    real queda en el almacén LFS de GitHub (1 GB gratis, unas 100 versiones). Se suben solo en hitos
+    y con el editor cerrado, porque este bloquea el archivo mientras está abierto.
+  - Pendiente (se hace en el primer hito): `nextion/VERSION` y etiquetas `pantalla-vX.Y.Z`; la versión
+    escrita en la página Sistema; `nextion/MANIFIESTO.md` con la huella SHA-256 de cada `.tft`
+    publicado; y que la Pi registre en la base (cadena de auditoría) la huella del `.tft` que cargó,
+    para saber qué programa tenía la pantalla en cada fecha.
+  - Quien clone el repositorio necesita Git LFS instalado para descargar el `.HMI` y el `.tft`.
+- **Decisiones de protocolo tomadas en la especificación:** (a) toda navegación pasa por la Pi (para
+  poder exigir el PIN y forzar páginas); (b) los eventos de toque llevan **códigos propios**
+  (`printh 65 <página> <control> 00 FF FF FF`) y no el `id` del editor, de modo que borrar o reordenar
+  objetos no rompe el protocolo; (c) el evento `FE` de "página cargada" permite a la Pi rellenar la
+  página aunque la pantalla se haya reiniciado; (d) la versión del protocolo vive en la variable
+  `principal.proto`.
+- **Respuestas del usuario (2026-10-09):**
+  1. **El usuario construirá el `.HMI`** en el editor de Nextion, con ayuda: se le entrega una
+     especificación (páginas, componentes con nombres e ids, eventos) y revisión por pantalla.
+  2. **Habrá un PIN para proteger los cambios** (umbrales, calibración, conexión de red): uno **por
+     defecto** y otro **que se puede asignar desde la plataforma**. Interpretación a confirmar: el
+     PIN por defecto sirve mientras no se asigne uno desde la plataforma; al asignarlo, el de
+     fábrica deja de valer. Diseño propuesto: el PIN se guarda con hash y sal (nunca en claro), se
+     compara en `g2-core` (la pantalla solo envía lo tecleado), con límite de intentos y bloqueo
+     temporal, cada intento fallido y cada cambio de PIN queda como evento, y la pantalla no
+     muestra nunca el PIN vigente. Un PIN por defecto conocido es débil: debe cambiarse al
+     instalar el equipo (se avisa en pantalla mientras siga activo).
+  3. **Se conserva la exportación de reportes de lecturas a una memoria USB** (la hacía el equipo
+     anterior). Pendiente definir: formato (PDF y/o CSV), rango de fechas, contenido (lecturas,
+     alarmas, eventos, calibraciones) y trazabilidad del propio reporte (huella SHA-256 del
+     archivo y estado de la cadena de auditoría al generarlo). El reporte lo genera `g2-core` desde
+     la base en solo lectura y se copia a la memoria USB montada por `udisks2` (ya instalado).
+  4. **Solo español**, por ahora.
+
+---
+
+## D-030 — Novedades por fecha en la página principal del repositorio
+
+- **Fecha:** 2026-10-09
+- **Pedido del usuario:** llevar los cambios con fechas en la página principal del repositorio, como
+  otra forma de que el equipo de trabajo esté enterado.
+- **Implementación:** `README.md` es la página principal de GitHub (resumen, estado de cada parte,
+  cómo empezar, estructura y enlaces a la documentación). Su sección **Novedades** se genera con
+  `tools/actualizar_novedades.py` a partir de `git log` (fecha, título y viñetas del mensaje de cada
+  commit, agrupados por día), entre las marcas `NOVEDADES:INICIO` y `NOVEDADES:FIN`; el resto del
+  README no se toca y el programa falla en vez de borrar si faltan las marcas. Con `--mensaje` se
+  incluye el commit que se está por hacer, para que el README quede en el mismo commit.
+- **Procedimiento antes de cada commit:** escribir el mensaje con un título claro y viñetas ("- ...");
+  ejecutar `python tools/actualizar_novedades.py --mensaje <archivo del mensaje>`; hacer el commit con
+  ese mismo archivo. El estado (tabla "Estado" del README) se edita a mano cuando una parte cambia.
+- **Cuidado:** el README es público; solo sale lo que dicen los mensajes de los commits, que no
+  deben llevar direcciones, contraseñas ni datos de acceso. Los mensajes se escriben con tildes.
+- **Pruebas:** `tests/test_novedades.py`.
+
+---
+
+## D-031 — Función del botón "Acusar"
+
+- **Fecha:** 2026-10-16
+- **Decisión del usuario:** acusar una alarma **silencia solo el sonido de la pantalla** y **nunca
+  desactiva los relevos** de las alarmas de corriente alterna: esos siguen activados mientras la
+  alarma esté activa. Pasados **2 minutos** desde el acuse, si la alarma persiste, el sonido de la
+  pantalla vuelve a sonar.
+- **Implementación prevista:**
+  - La clave de configuración `alarma.acuse_silencio_s` (por defecto 120 s, entre 10 y 3600) fija ese
+    tiempo; se creó en `catalogo.py` y se prueba en `tests/test_configuracion.py`.
+  - La pantalla solo envía el evento de toque (`65 00 06 00 FF FF FF`); `g2-core` registra el acuse
+    (ya existe `Almacen.acusar` en el ciclo de vida de la alarma, con quién y cuándo) y calcula el
+    silencio; `g2-ui` ordena a la Nextion el sonido.
+  - El acuse **no cierra** la alarma: se cierra cuando el valor vuelve a la normalidad (con la
+    histéresis). Un acuse repetido reinicia los 2 minutos.
+  - Los relevos dependen únicamente del estado de la alarma, nunca del acuse; esto debe cubrirse con
+    una prueba cuando se construya el motor de alarmas.
+- **Por qué:** una alarma silenciada por error no debe dejar al personal sin ningún aviso físico, y el
+  sonido que vuelve a sonar evita que una alarma acusada y olvidada pase inadvertida.
+
+---
+
 ## Decisiones pendientes
 
 - Probar las alertas por correo con MySQL y la cuenta real, y decidir cuándo
@@ -973,14 +1136,10 @@ descartadas, consecuencias, fuente.
   (D-016).
 - Confirmación por registro con la plataforma, incluida la copia de la
   cadena (D-008, D-016).
-- Valores por defecto de los umbrales de temperatura y RAM, y tiempo mínimo
-  entre alarmas repetidas (D-011). Los de disco ya están definidos (D-013).
 - Incorporar el medidor INA219 (corriente y tensión), cuando haya pruebas
   (D-011).
 - Reloj de tiempo real y política de marcas de tiempo sin hora confiable
   (el esquema ya guarda lo necesario para corregir las horas).
-- Modelo de configuración: claves y valores por defecto (la tabla `config` ya
-  existe; falta definir el catálogo de claves).
 - Comandos remotos autenticados, con confirmación y auditoría.
 - Lógica de alarmas local (histéresis, tiempo mínimo, acuse, estado seguro de
   salidas).
@@ -989,5 +1148,30 @@ descartadas, consecuencias, fuente.
 - Sistema de archivos de solo lectura y partición de datos.
 - Actualización remota firmada con vuelta atrás.
 - Confirmar las funciones de los relés, definir los dimensionamientos para AC y
-  elegir los modelos de los periféricos (D-023, `HARDWARE.md`); verificar en el
-  banco la lectura diferencial del sensor con el ADS1263.
+  elegir los modelos de los periféricos (D-023, `HARDWARE.md`).
+- Pantalla Nextion: escribir la especificación del `.HMI` (páginas, componentes, ids y eventos),
+  el protocolo versionado, el emulador de la pantalla y la carga del `.tft` desde la Pi (D-029).
+- PIN de la pantalla: confirmar la interpretación (PIN por defecto y PIN de la plataforma) y
+  definir las claves y el comando para asignarlo desde la plataforma (D-029).
+- Reportes a memoria USB: formato, contenido, rango de fechas y huella del archivo (D-029).
+
+### Tareas pendientes de hardware y operación
+
+Anotadas el 2026-10-09 a pedido del usuario (sugerencias hechas durante las pruebas del ADC).
+
+- **Lógica de alarmas con dos sensores:** decidir si cada sensor alarma por separado o por el
+  peor de los dos (el usuario la está revisando). Bloquea el motor de alarmas de `g2-core`.
+- **Consulta a Hummingbird:** forma recomendada de conectar P3 (0 V analógico) a un ADC
+  externo, impedancia de salida del sensor y si admite un capacitor en la salida.
+- **Medir con el sensor de oxígeno real:** ruido, frecuencia de corte del filtro (método de D-025),
+  lectura diferencial P2–P3 y límite de la tensión de entrada con el sobrerrango negativo. El
+  sensor 01117707500032 del usuario tiene el LED en rojo fijo (falla): reparar o reemplazar.
+- **Referencia de tensión calibrada (mejora opcional):** validar la exactitud absoluta del ADC y
+  corregir su error de ganancia (≈ −0.09 % frente al multímetro, D-025).
+- **Anotar la serie de la etiqueta de cada sensor** (`g2ctl sensor-serie`) y dar de alta los
+  periféricos cuando el usuario entregue las referencias.
+- **Base de datos definitiva:** moverla de `~/g2/datos` a `/var/lib/g2`, con usuario de servicio y
+  permisos restringidos.
+- **Raspberry Pi:** reservar su IP en el router (o usar `raspberry.local`); cambiar la contraseña
+  de `pi` y desactivar el acceso por contraseña; apagar el escritorio (`lightdm`) cuando el equipo
+  funcione bien.

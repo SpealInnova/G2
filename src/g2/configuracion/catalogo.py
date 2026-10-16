@@ -68,6 +68,10 @@ _LISTA = [
        "Margen para desactivar la alarma (evita que oscile en el limite).", "% O2", 0, 10),
     _c("alarma.discrepancia_pct", "real", 0.5,
        "Diferencia entre sensores a partir de la cual se alarma por discrepancia.", "% O2", 0, 10),
+    _c("alarma.acuse_silencio_s", "entero", 120,
+       "Tiempo que el sonido de la pantalla queda silenciado tras acusar una alarma; si la alarma "
+       "sigue activa al vencer, el sonido vuelve a sonar. No afecta a los relevos (D-031).",
+       "s", 10, 3600),
 
     # --- Salud de la Raspberry Pi (D-011, D-013, D-027) ------------------------------------------
     _c("salud.intervalo_min", "entero", 30, "Cada cuanto se registra el estado de salud.",
