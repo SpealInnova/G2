@@ -58,7 +58,9 @@ publicados (no se edita a mano).
 
 ### 2026-10-16
 
-- **Pantalla Nextion: especificación del HMI, fondo, fuentes y sonido; novedades en el README**
+- **Pantalla Nextion: primer proyecto del editor (.HMI) y su compilado (.tft) con Git LFS**
+  - Proyecto g2.HMI del Nextion Editor y su compilado g2.tft, versionados con Git LFS (primera subida): página principal en construcción, con fondo, fuentes y sonido de pulsación de la especificación.
+- **Pantalla Nextion: especificación del HMI, fondo, fuentes y sonido; novedades en el README** (`61d6cf8`)
   - Especificación del HMI (nextion/ESPECIFICACION_HMI.md): convenciones, protocolo con códigos propios de evento, página principal, pitido de pulsación y reglas del editor.
   - Fondo de la pantalla con el logotipo de SPEAL, ajustado a la cuadrícula de 800×480 (tools/ajustar_fondo_nextion.py), fuentes de la pantalla y sonido de pulsación (tools/generar_sonido_pulsacion.py).
   - Botón Acusar (D-031): silencia solo el sonido de la pantalla, los relevos no se desactivan y el sonido vuelve a los 2 minutos; nueva clave de configuración alarma.acuse_silencio_s (24 claves).
