@@ -233,3 +233,11 @@ decisión están en `MEMORIA_TECNICA.md`.
   y C (relevo 3 "fuera de servicio" con retardo de ~2 min); pendiente de decisión y de medir la placa.
 - Herramienta de banco tools/banco/pantalla.py: envia ordenes a la Nextion (p. ej. page teclado) y muestra los
   toques decodificados con los codigos de la especificacion; 8 pruebas del decodificador.
+- g2-core primera versión (D-034): `src/g2/nucleo/` (señal, motor de alarmas por sensor, fuentes, salidas
+  emuladas y ciclo), `python3 -m g2.nucleo`. 73 pruebas nuevas (209 en total, también en la Pi). Corrida
+  de 24 s con el ADC real en una base de prueba aparte; las alarmas se abrieron como se esperaba.
+- Divisor de voltaje en las entradas AIN0-AIN1 y AIN2-AIN3 (el usuario las nombra IN1-IN2 e IN3-IN4): g2-core lee
+  ambos sensores en 103.0 % (~1.03 V) con el ADC real; se abre la alarma alta de los dos y solo el relevo alto.
+- Navegación de la pantalla verificada por el usuario (principal y alarmas con `page`). Multímetro 1.030 V = ADC
+  1029.99 mV. ZeroTier instalado en la Pi desde el repositorio oficial con la llave verificada y unido a la red
+  privada del usuario, pendiente de autorizar el nodo (D-035). SSH por contraseña se conserva como canal de soporte.

@@ -1227,6 +1227,87 @@ descartadas, consecuencias, fuente.
 
 ---
 
+## D-034 — g2-core, primera versión: lectura, alarmas por sensor y almacenamiento
+
+- **Fecha:** 2026-10-21
+- **Qué es:** el paquete `src/g2/nucleo/` y su arranque `python3 -m g2.nucleo`. Primera parte del
+  servicio `g2-core` (D-005, único escritor de la base). Aún **no** es un servicio de systemd.
+- **Módulos:**
+  - `senal.py`: `O2 [%] = tensión [mV] / mv_por_pct + offset_pct` (10 mV por % en el Paracube; el
+    offset sale de la calibración vigente) y el agregado por intervalo (promedio, mínimo y máximo;
+    un hueco queda como hueco, con la marca `sin_datos`; un intervalo con intentos fallidos lleva la
+    marca `inestable`).
+  - `alarmas.py`: motor de alarmas. Por sensor: oxígeno bajo, oxígeno alto y sensor inválido; del
+    sistema: sensores discrepantes. Retardo (`alarma.o2_retardo_s`) e histéresis
+    (`alarma.o2_histeresis_pct`) como en D-027; acuse y sonido como en D-031 y D-032; relevos como en
+    D-033 (el de bajo con cualquier sensor en bajo, el de alto con cualquiera en alto, sin depender
+    del acuse). Todo cambio queda en la tabla `alarma` por medio del `Almacen` (revisiones y cadena de
+    auditoría). Al arrancar **retoma** las alarmas que quedaron abiertas, sin duplicarlas y cerrando las
+    que ya no corresponden.
+  - `fuentes.py`: la fuente de tensiones. `FuenteAds1263` lee los canales `ads1263:N-M` del ADC real;
+    ante un error del ADC devuelve "sin señal" (no detiene el programa) y reconfigura el chip si se
+    reinició o falla 3 veces seguidas (máximo un intento cada 5 s). `FuenteSimulada` para pruebas.
+  - `salidas.py`: interfaz de los relevos y una versión emulada. **La versión de GPIO no se escribe
+    todavía**: depende de la decisión de D-033 (estado de los pines al arrancar y al caerse el
+    programa).
+  - `nucleo.py`: el ciclo (cada 0.5 s): leer, convertir, evaluar, fijar los relevos y, cada
+    `muestreo.intervalo_guardado_s` (15 s), guardar un registro por sensor. Entrega
+    `estado_pantalla()` (valor, estado, acusada, aviso, sonido, parpadeo y relevos) que usará `g2-ui`.
+    El arranque deja la razón `SYS_ARRANQUE` o `SYS_REINICIO_ANORMAL` (si el cierre anterior no fue
+    ordenado) y el cierre guarda el intervalo en curso y marca el apagado limpio.
+- **Decisiones de diseño tomadas aquí (a confirmar por el usuario):**
+  1. La **histéresis de la discrepancia** entre sensores es la mitad de su límite: se abre si la
+     diferencia supera `alarma.discrepancia_pct` y se cierra cuando baja de la mitad.
+  2. El **sensor inválido** usa el mismo retardo que las alarmas de oxígeno.
+  3. **Acusar** acusa todas las alarmas activas, también las del sistema (discrepancia y sensor
+     inválido); estas suenan como las demás, pero no activan relevos.
+  4. Las lecturas se toman **dos veces por segundo** (parámetro del ciclo, no es clave de
+     configuración todavía).
+- **Aviso:** el valor por omisión de `alarma.discrepancia_pct` (0.5 %) es muy estrecho para dos sensores
+  reales con calibraciones distintas: probablemente la alarma de discrepancia se abrirá a menudo.
+  Revisarlo con las mediciones del sensor real.
+- **Probado:** 73 pruebas nuevas (209 en total, también en la Raspberry Pi con Python 3.13) y una
+  corrida de 24 s con el ADC real y una base de prueba aparte: 31 muestras por sensor cada 15 s,
+  alarmas abiertas tras el retardo de 10 s, cierre ordenado. Con las entradas como estaban en ese
+  momento (IN0–IN1 ≈ 1.03 V y IN2–IN3 ≈ 9 mV) se abrieron las alarmas de oxígeno alto, de oxígeno bajo y
+  de discrepancia, como corresponde.
+- **Comparación con el multímetro (2026-10-21):** con el divisor en AIN2–AIN3 el usuario midió **1.030 V** y el
+  núcleo guardó **1029.99 mV** (promedio de 31 muestras, sensor 2) y 1030.0 mV (11 muestras): coinciden. El
+  usuario nombra las entradas desde 1 (IN1–IN2 = AIN0–AIN1, IN3–IN4 = AIN2–AIN3).
+- **Observado:** la **primera muestra** tras arrancar el ADC puede ser transitoria (el sensor 2 marcó
+  56.6 % en la primera muestra y luego 0.9 %). Se evaluará descartar las primeras lecturas tras el
+  arranque o tras reiniciar el chip.
+- **Pendiente:** servicio de systemd con watchdog por progreso (D-012); relevos por GPIO (D-033);
+  `g2-ui` (protocolo de la Nextion y emulador); `g2-uplink` y la cola de envío; registro de salud de
+  la Pi; flujos de calibración; que `g2ctl` pida los cambios al núcleo en vez de escribir.
+
+---
+
+## D-035 — Acceso remoto a la Raspberry Pi con ZeroTier
+
+- **Fecha:** 2026-10-21
+- **Pedido del usuario:** una IP fija para llegar a la Pi desde fuera de la red local y, más adelante,
+  ofrecer soporte técnico. El usuario creó una red privada de ZeroTier y pidió unir la Pi a ella.
+- **Qué se hizo:** `zerotier-one` 1.16.2 instalado **desde el repositorio oficial de apt para Debian 13**
+  (no con `curl | bash`), con la llave de firma de ZeroTier, Inc. (huella
+  `74A5E9C458E1A431F1DA57A71657198823E52A61`) descargada de dos orígenes distintos (el repositorio oficial
+  en GitHub y su servidor de descargas) cuyos archivos resultaron idénticos. El servicio queda activo y
+  habilitado al arrancar (usa unos 13 MB de memoria). La Pi se unió a la red; al ser **privada**, queda
+  pendiente que el usuario autorice el nodo en ZeroTier Central y le asigne una IP administrada.
+- **Decisión del usuario sobre SSH:** **conservar el acceso por contraseña** como canal adicional de
+  soporte (no desactivarlo), y cambiar la contraseña de fábrica de `pi` al terminar el proyecto. El ID de
+  la red y el del nodo se guardan solo en la nota local (el repositorio es público).
+- **Riesgos y mitigaciones recomendadas:** mientras la contraseña sea la de fábrica, cualquier miembro
+  autorizado de la red podría entrar; por eso solo se autoriza a mano y, hasta el cambio, es una red de
+  confianza reducida. Opciones para después: contraseña larga; permitir la contraseña solo desde la
+  interfaz de ZeroTier (`Match Address` en `sshd_config`) y exigir llave desde las demás; cortafuegos
+  limitando SSH a la red local y a ZeroTier; `fail2ban`. Un acceso remoto a un equipo hospitalario debe
+  revisarse con el responsable de seguridad antes de la instalación en campo.
+- **Pendiente:** autorizar el nodo y fijar su IP; comprobar el acceso por SSH desde la IP de ZeroTier;
+  elegir una de las opciones de refuerzo de arriba.
+
+---
+
 ## Decisiones pendientes
 
 - Probar las alertas por correo con MySQL y la cuenta real, y decidir cuándo
@@ -1284,5 +1365,7 @@ Anotadas el 2026-10-09 a pedido del usuario (sugerencias hechas durante las prue
 - **Base de datos definitiva:** moverla de `~/g2/datos` a `/var/lib/g2`, con usuario de servicio y
   permisos restringidos.
 - **Raspberry Pi:** reservar su IP en el router (o usar `raspberry.local`); cambiar la contraseña
-  de `pi` y desactivar el acceso por contraseña; apagar el escritorio (`lightdm`) cuando el equipo
+  de `pi` al terminar el proyecto (el usuario quiere conservar el acceso por contraseña como canal de
+  soporte, ver D-035);
+  escritorio (`lightdm`) cuando el equipo
   funcione bien.

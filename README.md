@@ -14,7 +14,7 @@ Nextion y plataforma web **sp-peek.com**. Primera versión para **hospitales**.
 | Base de datos interna (SQLite): esquema, auditoría con huellas SHA-256, cola de envío, catálogo de configuración y capa de datos | **Hecho** y probado |
 | Convertidor analógico-digital ADS1263 (controlador, emulador y herramientas de banco) | **Hecho**; validado con una fuente de prueba |
 | Raspberry Pi preparada (SPI, I²C, UART) y herramienta `g2ctl` | **Hecho** |
-| Núcleo `g2-core` (lectura, promedio, alarmas, almacenamiento) | Siguiente |
+| Núcleo `g2-core` (lectura, promedio, alarmas, almacenamiento) | Primera versión hecha y probada con el ADC real; faltan el servicio, los relevos y la pantalla |
 | Servicio de envío a la plataforma | Por construir (diseño en la memoria técnica) |
 | Pantalla Nextion | Páginas principal, teclado y alarmas listas (v0.2.0); faltan configuración, red, calibración, sistema y reportes |
 | Alertas por correo en la plataforma | Construidas en una rama de la plataforma, sin publicar |
@@ -56,9 +56,18 @@ publicados (no se edita a mano).
 
 <!-- NOVEDADES:INICIO -->
 
+### 2026-10-21
+
+- **Núcleo g2-core, primera versión: lectura, alarmas por sensor y almacenamiento**
+  - Paquete src/g2/nucleo y arranque con python3 -m g2.nucleo: convierte la tensión de cada sensor a % de oxígeno (10 mV por %, con la corrección de la calibración vigente) y guarda un registro por sensor cada 15 s con promedio, míni…
+  - Motor de alarmas por sensor (D-032): oxígeno bajo, oxígeno alto y sensor sin señal, más la discrepancia entre sensores como alarma del sistema; con retardo, histéresis, acuse que silencia el sonido 2 minutos y relevos de oxígeno…
+  - Lectura del ADS1263 que no se detiene ante errores y reconfigura el chip si se reinicia; salidas de los relevos solo emuladas, pendientes de la decisión de D-033; cierre ordenado que guarda el intervalo en curso.
+  - Probado con el ADC real en la Raspberry Pi y un divisor de voltaje: 1.030 V en el multímetro y 1029.99 mV en el núcleo; 73 pruebas nuevas, 209 en total, también en la Pi.
+  - Acceso remoto con ZeroTier instalado desde el repositorio oficial y la memoria técnica con D-034 (núcleo) y D-035 (acceso remoto); README actualizado.
+
 ### 2026-10-20
 
-- **Pantalla Nextion v0.2.0: páginas teclado y alarmas; decisiones de alarmas y relevos**
+- **Pantalla Nextion v0.2.0: páginas teclado y alarmas; decisiones de alarmas y relevos** (`76c5972`)
   - Pantalla v0.2.0: se suman la página del teclado numérico (PIN y valores) y la página de alarmas (umbrales, retardo, histéresis, tiempo de acuse e historial reciente), con fondo para páginas interiores y sonido de alarma.
   - Alarmas por sensor (D-032): aviso visual en el recuadro de cada sensor, parpadeo hasta acusar y sonido repetido por la Pi; Acusar acusa ambos sensores y silencia el sonido 2 minutos (D-031, nueva clave alarma.acuse_silencio_s).
   - Relevos de alarma (D-033): placa de 3 relevos, uno para oxígeno bajo y otro para oxígeno alto, energizados en normal; análisis del riesgo del estado de los pines en el reinicio y opciones A, B y C pendientes de decisión y de medi…
