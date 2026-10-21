@@ -1119,6 +1119,114 @@ descartadas, consecuencias, fuente.
 
 ---
 
+## D-032 — Alarmas por sensor: aviso visual y sonoro
+
+- **Fecha:** 2026-10-19
+- **Decisión del usuario:** cada sensor tiene **su propia alarma**; no se agrupan en "el peor de los
+  dos". Cada alarma se avisa de forma visual (un letrero o el indicador del sensor iluminado) y con
+  sonido.
+- **Cómo queda (propuesta que sigue esa decisión; el usuario puede ajustarla):**
+  - **Independencia.** Cada sensor evalúa sus umbrales (`alarma.o2_bajo_pct`, `alarma.o2_alto_pct`) con
+    su retardo y su histéresis, y abre y cierra su propia alarma en la base de datos (ya guarda
+    `sensor_id` en cada alarma). Que un sensor esté en alarma no afecta al otro.
+  - **Aviso visual por sensor (pantalla principal).** El recuadro de estado del sensor (`est_1`,
+    `est_2`) cambia a rojo con el texto ALTA o BAJA y el valor de oxígeno (`o2_1`, `o2_2`) pasa a rojo.
+    Mientras la alarma no se ha acusado, el recuadro **parpadea** (1 Hz); al acusar, queda **fijo en
+    rojo** hasta que la alarma se cierra. Así se distingue "nueva" de "ya vista" sin depender solo del
+    sonido.
+  - **Letrero.** La línea `aviso` resume las alarmas activas, por ejemplo `S1 BAJO 18.5 %` o
+    `S1 BAJO 18.5 %  S2 ALTO 93.2 %` (máximo 60 letras por `txt_maxl`).
+  - **Sonido.** Un solo sonido de alarma para cualquier sensor, por el canal 0 de la pantalla. La Pi lo
+    repite cada pocos segundos en vez de dejarlo en bucle en la pantalla: si `g2-ui` falla, el sonido
+    se detiene solo y no queda sonando sin control.
+  - **Acusar (D-031).** Confirmado por el usuario: un solo botón acusa **ambos sensores** y el sonido
+    de la alarma a la vez: silencia el sonido por 2 minutos y deja los recuadros fijos. Una alarma **nueva** (por ejemplo, del otro sensor)
+    vuelve a sonar al instante aunque la otra ya estuviera acusada.
+  - **Relevos.** El aviso visual y sonoro es por sensor, pero los **relevos de las alarmas de corriente
+    alterna son uno por tipo de alarma** (oxígeno bajo y oxígeno alto), no uno por sensor: ver D-033.
+  - **Otras alarmas.** La discrepancia entre los dos sensores (`alarma.discrepancia_pct`) y la falla de
+    un sensor (sin señal) son alarmas aparte, propias del sistema y no de un sensor.
+- **Por qué:** con dos sensores que pueden estar en tuberías o puntos distintos, "el peor de los dos"
+  esconde cuál está mal y en qué sentido; la alarma por sensor dice exactamente dónde está el problema.
+- **Por probar:** el parpadeo y el sonido repetido con la pantalla real, y que la repetición de
+  órdenes desde la Pi no sature el puerto serie.
+
+---
+
+## D-033 — Relevos de alarma: uno por alarma, energizados en normal
+
+- **Fecha:** 2026-10-19
+- **Decisiones del usuario:**
+  - Se usará la placa de expansión **RPi Relay Board** (Waveshare) de **3 relevos**, con **un relevo
+    dedicado a cada alarma**: **relevo 1 = oxígeno bajo** (se activa cuando **cualquiera** de los dos
+    sensores está en nivel bajo) y **relevo 2 = oxígeno alto** (cuando cualquiera está en nivel alto).
+    Esto reemplaza la idea de "un relevo por sensor" de la primera versión de D-032.
+  - Los relevos trabajan **energizados en normal** (a prueba de fallas): la bobina está activa mientras
+    todo va bien y se suelta en alarma, de modo que un corte de energía de la placa también avisa.
+    El usuario no ve por ahora cómo prevenir un corte de energía con el modo "energizado solo en
+    alarma"; una batería recargable queda como plan futuro.
+  - El relevo 3 queda **libre**. Propuesta (por confirmar): "equipo sin vigilancia", que se suelta
+    cuando `g2-core` no está funcionando (la falla del equipo que ya no tenía relevo).
+  - Hay **tres fuentes separadas**: la Raspberry Pi, la pantalla Nextion y los periféricos (entre
+    ellos la placa de relevos).
+  - Los relevos no dependen del acuse (D-031).
+- **Datos de la placa (wiki de Waveshare):** canales CH1, CH2 y CH3 en los pines BCM **26, 20 y 21**
+  (físicos 37, 38 y 40); el control es de **nivel bajo** (el relevo se cierra con el pin en bajo); hay
+  que dejar puesto el puente `Relay_JMP` para que la Pi los controle; la wiki no publica las
+  características de los contactos, el aislamiento ni la protección de las bobinas (a revisar con la
+  hoja de datos y el experto; las tiendas indican 5 A).
+- **Consecuencia crítica ("energizado en normal" con control de nivel bajo):** el relevo está
+  energizado cuando el pin está en **bajo**, y es justo el estado por omisión de los pines 26, 20 y 21
+  de la Raspberry Pi (resistencia hacia abajo). Por lo tanto, **mientras la Pi arranca, o si el
+  programa se cae y suelta los pines, los relevos podrían quedar energizados, es decir, "todo
+  normal", sin que nadie vigile**. Es el sentido peligroso del fallo. Defensas propuestas, en capas
+  (todas por verificar en la placa real con un multímetro, apagando y reiniciando la Pi y matando el
+  programa):
+  1. `gpio=26,20,21=op,dh` en `/boot/firmware/config.txt`: el firmware pone los pines en alto desde
+     el arranque (relevos soltados = alarma hasta que `g2-core` tome el control).
+  2. `ExecStopPost` del servicio `g2-core` (systemd): al detenerse o caerse el programa, vuelve a
+     poner los tres pines en alto.
+  3. El watchdog de hardware reinicia la Pi si se cuelga; al reiniciar, vuelve a regir la capa 1.
+  4. Si la placa lo permite, resistencias de 10 kΩ de cada entrada a 3.3 V, para que un pin suelto
+     o la Pi apagada quede en alto.
+  Con esto, los estados sin vigilancia (arranque, caída del programa, cuelgue, Pi apagada) **disparan**
+  las alarmas externas; hay que aceptar y avisar que cada reinicio las dispara unos segundos.
+- **Diagnóstico: que un reinicio de la Pi no dispare las alarmas (2026-10-19, pedido del usuario;
+  pendiente de decisión).** La placa se activa mediante optoacopladores PC817 y sus relés tienen
+  contactos NC y NA. Es posible, con un costo:
+  - **Opción B (sin hardware nuevo):** si no se agregan las resistencias hacia 3.3 V ni `gpio=…=dh`
+    (capas 1 y 4 de arriba), el estado por omisión de los pines 26, 20 y 21 (hacia abajo = nivel bajo
+    = LED del optoacoplador encendido) deja los relevos **energizados = normal** durante el
+    reinicio. Se verifica mirando los LED CH1 a CH3 de la placa durante un reinicio. Costo: durante
+    el reinicio, el cuelgue o la caída del programa **nadie vigila y no se nota**; un cuelgue
+    repetido (el watchdog reinicia la Pi cada 15 s) no avisaría nunca. Con solo contactos NC/NA no
+    se puede distinguir "reiniciando" de "normal": se necesita memoria en el tiempo.
+  - **Opción C (recomendada para evaluar):** como la B, más el **relevo 3 = "equipo fuera de
+    servicio" con retardo de unos 2 minutos**: la Pi emite un latido (un pulso por segundo) a un
+    temporizador reiniciable externo; si falta más de ~120 s (más que un reinicio normal, ~60 s), el
+    relevo 3 se suelta y avisa. Un reinicio normal no dispara nada; un cuelgue repetido o una Pi
+    apagada, sí. Implementación: microcontrolador pequeño que mide el latido (preferido: ajustable y
+    fiable, pero agrega firmware que certificar) o un temporizador reiniciable discreto (un 555 con
+    condensador grande es poco fiable para 2 min). Las tres salidas NC en paralelo dan un "alarma
+    general" si el hospital lo pide. El aviso de la plataforma (correo si el equipo deja de reportar)
+    cubre además la caída remota.
+  - **Opción A (la estricta, capas 1 a 4 de arriba):** cada reinicio y cada caída disparan las
+    alarmas externas unos segundos. La más segura, pero con alarmas en cada reinicio planeado.
+  - Siempre que se acepte una ventana sin vigilancia, debe acotarse (el retardo), documentarse y
+    revisarse con un experto en equipos médicos.
+- **Cableado de las alarmas externas:** con relevos energizados en normal, el aparato de alarma va
+  conectado al contacto **normalmente cerrado (NC)**: queda cerrado cuando la bobina se suelta (alarma
+  o falta de energía). Dimensionar los contactos para la corriente alterna real y revisar con un
+  experto antes de conectar (equipo hospitalario, `HARDWARE.md` §7).
+- **Fuentes separadas:** la tierra (GND) de las señales de control debe ser común entre la Pi y la
+  placa. Si cae la fuente de la placa, los relevos se sueltan (alarma: lo deseado). Si cae la fuente
+  de la pantalla, las alarmas de AC siguen, pero la pantalla se apaga: la Pi detecta que no responde
+  y lo registra y avisa por la plataforma. Si cae la de la Pi, depende de la capa 4 (por verificar).
+- **Pendientes de esta decisión:** confirmar el uso del relevo 3; medir el comportamiento real de la
+  placa en arranque y caída; elegir la fuente de 3.3 V de la placa; batería o respaldo de energía.
+
+---
+
 ## Decisiones pendientes
 
 - Probar las alertas por correo con MySQL y la cuenta real, y decidir cuándo
@@ -1147,8 +1255,11 @@ descartadas, consecuencias, fuente.
 - Gestión de WiFi (NetworkManager).
 - Sistema de archivos de solo lectura y partición de datos.
 - Actualización remota firmada con vuelta atrás.
-- Confirmar las funciones de los relés, definir los dimensionamientos para AC y
-  elegir los modelos de los periféricos (D-023, `HARDWARE.md`).
+- Relevos (D-033): ya se decidieron placa de 3 relevos, uno por alarma (bajo y alto) y energizados en
+  normal. Falta: confirmar el relevo 3 ("equipo sin vigilancia"), **medir en la placa real** el estado
+  de los relevos al arrancar, apagar y matar el programa (las 4 capas de defensa de D-033),
+  definir los dimensionamientos para AC con un experto, la fuente de 3.3 V de la placa y el respaldo
+  de energía; y elegir los modelos de los demás periféricos (D-023, `HARDWARE.md`).
 - Pantalla Nextion: escribir la especificación del `.HMI` (páginas, componentes, ids y eventos),
   el protocolo versionado, el emulador de la pantalla y la carga del `.tft` desde la Pi (D-029).
 - PIN de la pantalla: confirmar la interpretación (PIN por defecto y PIN de la plataforma) y

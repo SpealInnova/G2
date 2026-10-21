@@ -16,7 +16,7 @@ Nextion y plataforma web **sp-peek.com**. Primera versión para **hospitales**.
 | Raspberry Pi preparada (SPI, I²C, UART) y herramienta `g2ctl` | **Hecho** |
 | Núcleo `g2-core` (lectura, promedio, alarmas, almacenamiento) | Siguiente |
 | Servicio de envío a la plataforma | Por construir (diseño en la memoria técnica) |
-| Pantalla Nextion | Página principal lista (v0.1.0); faltan teclado, alarmas, configuración, red, calibración y sistema |
+| Pantalla Nextion | Páginas principal, teclado y alarmas listas (v0.2.0); faltan configuración, red, calibración, sistema y reportes |
 | Alertas por correo en la plataforma | Construidas en una rama de la plataforma, sin publicar |
 
 ## Para empezar
@@ -56,9 +56,18 @@ publicados (no se edita a mano).
 
 <!-- NOVEDADES:INICIO -->
 
+### 2026-10-20
+
+- **Pantalla Nextion v0.2.0: páginas teclado y alarmas; decisiones de alarmas y relevos**
+  - Pantalla v0.2.0: se suman la página del teclado numérico (PIN y valores) y la página de alarmas (umbrales, retardo, histéresis, tiempo de acuse e historial reciente), con fondo para páginas interiores y sonido de alarma.
+  - Alarmas por sensor (D-032): aviso visual en el recuadro de cada sensor, parpadeo hasta acusar y sonido repetido por la Pi; Acusar acusa ambos sensores y silencia el sonido 2 minutos (D-031, nueva clave alarma.acuse_silencio_s).
+  - Relevos de alarma (D-033): placa de 3 relevos, uno para oxígeno bajo y otro para oxígeno alto, energizados en normal; análisis del riesgo del estado de los pines en el reinicio y opciones A, B y C pendientes de decisión y de medi…
+  - Herramientas: tools/banco/pantalla.py (envía órdenes a la pantalla y decodifica los toques, con pruebas), generadores del fondo interior y del sonido de alarma.
+  - Especificación del HMI ampliada (teclado, alarmas, sonido de alarma, largo de textos) y manifiesto de versiones con las huellas SHA-256.
+
 ### 2026-10-16
 
-- **Pantalla Nextion v0.1.0: página principal terminada y herramienta de versiones**
+- **Pantalla Nextion v0.1.0: página principal terminada y herramienta de versiones** (`59a7025`)
   - Página principal de la pantalla (versión 0.1.0): fondo con el logotipo de SPEAL, tarjetas de los dos sensores, línea de avisos y 6 botones con pitido de pulsación; protocolo de eventos versión 1.
   - tools/publicar_pantalla.py: copia el .tft compilado a nextion/build/ con su versión y registra las huellas SHA-256 en nextion/MANIFIESTO.md; una versión publicada no se puede sobrescribir.
   - Especificación del HMI: estado inicial de los textos de estado y largo máximo de los textos (txt_maxl).

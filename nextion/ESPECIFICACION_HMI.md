@@ -68,9 +68,9 @@ page alarmas
 - **Nombres** de páginas y componentes: minúsculas, sin tildes ni espacios, en español
   (`principal`, `o2_1`, `b_alarmas`). Se asigna en *objname* (para una página, con doble clic en el
   panel *Page*).
-- **Orden de las páginas** (determina su número interno): principal, alarmas, config, red,
-  calibracion, sistema, teclado, reportes. Las páginas nuevas se agregan **al final**; no se
-  reordenan.
+- **Orden de las páginas en el editor:** las páginas nuevas se agregan **al final**, en el orden en que
+  se construyen, y no se reordenan. El número interno de cada página no importa: la Pi las llama por
+  su **nombre** y los eventos usan los códigos `PP` fijos de la sección 2.
 - **No borrar objetos que ya estén en uso:** si sobra uno, se vuelve invisible (`vis=0`) o se deja.
 - **Variables globales** (`vscope = global`) solo para el protocolo; el resto es local.
 - **Sin lógica en la pantalla** más allá de: enviar el evento de toque, enviar el evento de página
@@ -203,10 +203,23 @@ Pi escriba de más se **corta sin avisar**. Valores: `aviso` 60, `est_1` y `est_
 |---|---|
 | `o2_1`, `o2_2` | `20.9`, `100.0`, o `--.-` si no hay dato |
 | `est_1`, `est_2` | NORMAL (bco normal), ALTA y BAJA (bco alarma), CALIBRANDO (bco calibrando), SIN SEÑAL y APAGADO (bco inactivo); `pco` siempre blanco |
-| `aviso` | "Sin alarmas" (bco tarjeta, pco texto) o el texto de la alarma activa (bco alarma, pco blanco) |
+| `aviso` | "Sin alarmas" (bco tarjeta, pco texto) o el resumen de las alarmas activas, p. ej. `S1 BAJO 18.5 %  S2 ALTO 93.2 %` (bco alarma, pco blanco); máximo 60 letras |
 | `red_s` | `WIFI OK`, `CABLE OK`, `SIN RED` |
 | `cola_s` | `COLA 0`, `COLA 1250`... |
 | `hora` | `HH:MM` |
+
+### Alarma de un sensor (D-032)
+
+Cada sensor se avisa por separado. Para el sensor N, la Pi escribe:
+
+| Situación | `est_N` | `o2_N` |
+|---|---|---|
+| Alarma nueva (sin acusar) | texto `ALTA` o `BAJA`, `bco` = alarma, `pco` = blanco; **alterna** `bco` entre alarma (51427) y blanco cada segundo | `pco` = alarma (51427) |
+| Alarma acusada | `bco` = alarma **fijo** | `pco` = alarma |
+| Sin alarma | texto de su estado normal | `pco` = texto (6438) |
+
+El parpadeo lo hace la Pi (no la pantalla), así se detiene si `g2-ui` se detiene y el recuadro queda
+en el último color. El sonido de alarma es otro audio del proyecto (id 1 en adelante), por el canal 0.
 
 ## 6. Sonido de pulsación (pitido)
 
@@ -227,12 +240,124 @@ tono de 2 kHz, 70 ms, mono, 16 bits, 16 kHz) se genera con `tools/generar_sonido
 4. Regla para las páginas siguientes: **todo botón que el usuario pulse lleva `play 1,0,0` en su
    Touch Press**; los componentes que solo muestran no.
 
+### Sonido de alarma
+
+Es otro audio del proyecto: `nextion/sonidos/alarma.wav` (tono doble alterno de 880 y 660 Hz, 0.68 s,
+generado por `tools/generar_sonido_alarma.py`). Se agrega en el panel **Audio** como **el segundo**
+(id 1). Ningún componente lo reproduce por sí solo: **lo ordena la Pi** con `play 0,1,0` (canal 0,
+audio 1, una vez) y lo **repite cada pocos segundos** mientras haya una alarma sin acusar (D-032). Así,
+si `g2-ui` falla, el sonido se detiene solo y no queda sonando sin control. Tras **Acusar** se silencia
+por `alarma.acuse_silencio_s` (120 s, D-031).
+
 El pitido lo reproduce la propia pantalla, sin ir y volver a la Pi, para que suene al instante
 aunque la Pi esté ocupada (decisión de D-029). Si `g2-ui` falla, los toques siguen sonando, pero
 no navegan. Si el editor rechaza el `.wav` o el canal 1 no existe en este modelo, se ajusta al
 probar (otro formato de audio o el canal 0).
 
-## 7. Cómo probar lo construido
+## 7. Página `teclado` (PP = 06)
+
+Teclado numérico para escribir el PIN y los valores. **La pantalla no guarda lo tecleado**: cada tecla
+avisa a la Pi, que lleva el valor, lo valida y reescribe el campo `valor` (para un PIN escribe un
+asterisco por dígito). Así el PIN nunca se queda en la pantalla.
+
+**Fondo:** `nextion/fondos/interna.png` (barra con el logotipo y un panel blanco), generado por
+`tools/generar_fondo_interno.py`. En el panel **Picture** → **Add**, agréguelo como **segunda imagen**
+(id 1). Se usa también en las demás páginas interiores. Componente `fondo`: *Picture* de pantalla completa
+(`pic` = 1, x 0, y 0, w 800, h 480), el primero que se crea en la página.
+
+Todos los *Text* de la tabla llevan `sta` = solid color salvo `titulo` (crop image, `picc` = 1).
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Teclado | blanco | crop image (`picc` 1) | 30; `xcen`=0 |
+| `t_titulo` | Text | 32 | 84 | 368 | 40 | 1 | Valor | texto_suave | tarjeta | 40; `xcen`=0; qué se está tecleando |
+| `valor` | Text | 32 | 128 | 368 | 72 | 2 | (vacío) | texto | fondo (63423) | 12; centrado; campo de lo tecleado |
+| `msg` | Text | 32 | 208 | 368 | 72 | 0 | (vacío) | texto_suave | tarjeta | 80; `xcen`=0, `ycen`=0, `isbr`=True (salto de línea); ayuda y errores |
+| `b_borrar` | Button | 32 | 292 | 176 | 56 | 4 | Borrar | texto | boton | `bco2` = boton_pulsado |
+| `b_limpiar` | Button | 224 | 292 | 176 | 56 | 4 | Limpiar | texto | boton | |
+| `b_cancelar` | Button | 32 | 364 | 176 | 72 | 4 | Cancelar | texto | boton | |
+| `b_aceptar` | Button | 224 | 364 | 176 | 72 | 4 | Aceptar | blanco | normal (1128) | `bco2` = 870 (verde oscuro); `pco2` blanco |
+| `k_7`, `k_8`, `k_9` | Button | 436, 548, 660 | 84 | 100 | 76 | 2 | 7, 8, 9 | texto | boton | `bco2` = boton_pulsado |
+| `k_4`, `k_5`, `k_6` | Button | 436, 548, 660 | 168 | 100 | 76 | 2 | 4, 5, 6 | texto | boton | |
+| `k_1`, `k_2`, `k_3` | Button | 436, 548, 660 | 252 | 100 | 76 | 2 | 1, 2, 3 | texto | boton | |
+| `k_punto`, `k_0`, `k_signo` | Button | 436, 548, 660 | 336 | 100 | 76 | 2 | `.`, 0, ± | texto | boton | el signo `±` es el carácter 0xB1 (existe en iso-8859-1) |
+
+Los botones llevan `style` = flat, `sta` = solid color y `pco2` = `pco`. Los que no figuran con `bco2`
+propio usan boton_pulsado (48730).
+
+### Eventos (`printh 65 06 CC 00 FF FF FF` al soltar)
+
+Todos los botones llevan además `play 1,0,0` en *Touch Press*.
+
+| CC | Botón | | CC | Botón |
+|---|---|---|---|---|
+| 10 a 19 | `k_0` a `k_9` (10 + dígito) | | 1C | `b_borrar` |
+| 1A | `k_punto` | | 1D | `b_limpiar` |
+| 1B | `k_signo` | | 1E | `b_cancelar` |
+| FE | página cargada (*Postinitialize*) | | 1F | `b_aceptar` |
+
+### Qué hace la Pi
+
+1. Antes de abrir la página, la Pi guarda **qué se va a teclear** (PIN o una clave de configuración) y
+   **desde qué página** (para volver), y envía `page teclado`.
+2. Al llegar `65 06 FE`, escribe `titulo`, `t_titulo`, `valor` y `msg` (por ejemplo, el rango válido).
+3. Cada tecla: la Pi actualiza el valor y reescribe `valor`. Ignora lo que no corresponda (el punto en
+   un valor entero, `±` si no admite negativos, más de 12 caracteres).
+4. **Aceptar:** la Pi valida con el catálogo de configuración (rango y relaciones, p. ej. bajo < alto).
+   Si es válido lo aplica con origen `pantalla`, y vuelve a la página de origen. Si no, escribe el
+   motivo en `msg` con `pco` = alarma (51427) y deja la página abierta.
+5. **Cancelar:** vuelve sin cambiar nada.
+6. **PIN:** `valor` muestra un asterisco por dígito. Intentos fallidos y bloqueo (propuesta: 3 fallos,
+   60 s de bloqueo) los lleva la Pi, y cada intento queda como evento. Cuánto tiempo vale el PIN
+   aceptado antes de pedirlo otra vez (propuesta: 5 minutos) está por confirmar; ambos valores
+   serán claves del catálogo cuando se construya `g2-ui`.
+
+## 8. Página `alarmas` (PP = 01)
+
+Muestra y ajusta los umbrales de alarma y lista las alarmas recientes. Todo cambio pide el PIN (la Pi
+abre el teclado, sección 7). **Fondo:** el mismo `interna.png` (`fondo`, `pic` = 1).
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Alarmas | blanco | crop image (`picc` 1) | 30; `xcen`=0 |
+| `h_aj` | Text | 32 | 84 | 368 | 28 | 0 | AJUSTES | texto_suave | tarjeta | 20; `xcen`=0 |
+| `l_bajo` | Text | 32 | 116 | 190 | 44 | 0 | Oxígeno bajo | texto | tarjeta | 20; `xcen`=0 |
+| `l_alto` | Text | 32 | 168 | 190 | 44 | 0 | Oxígeno alto | texto | tarjeta | 20; `xcen`=0 |
+| `l_retardo` | Text | 32 | 220 | 190 | 44 | 0 | Retardo | texto | tarjeta | 20; `xcen`=0 |
+| `l_histeresis` | Text | 32 | 272 | 190 | 44 | 0 | Histéresis | texto | tarjeta | 20; `xcen`=0 |
+| `l_acuse` | Text | 32 | 324 | 190 | 44 | 0 | Tiempo acuse | texto | tarjeta | 20; `xcen`=0 |
+| `v_bajo` | Button | 228 | 116 | 172 | 44 | 4 | 20.0 % | texto | boton | `bco2` = boton_pulsado; `txt_maxl` 12 |
+| `v_alto` | Button | 228 | 168 | 172 | 44 | 4 | 92.0 % | texto | boton | |
+| `v_retardo` | Button | 228 | 220 | 172 | 44 | 4 | 10 s | texto | boton | |
+| `v_histeresis` | Button | 228 | 272 | 172 | 44 | 4 | 0.5 % | texto | boton | |
+| `v_acuse` | Button | 228 | 324 | 172 | 44 | 4 | 120 s | texto | boton | |
+| `b_volver` | Button | 32 | 392 | 368 | 56 | 4 | Volver | texto | boton | |
+| `h_hist` | Text | 432 | 84 | 336 | 28 | 0 | HISTORIAL RECIENTE | texto_suave | tarjeta | 24; `xcen`=0 |
+| `h1` a `h6` | Text | 432 | 116 + 50·n (n = 0 a 5) | 336 | 44 | 0 | (vacío) | texto | tarjeta | 40; `xcen`=0 |
+
+Las cinco filas de ajuste corresponden, en orden, a las claves `alarma.o2_bajo_pct`,
+`alarma.o2_alto_pct`, `alarma.o2_retardo_s`, `alarma.o2_histeresis_pct` y `alarma.acuse_silencio_s`
+(D-027, D-031). Los valores llevan su unidad escrita en el texto del botón.
+
+### Eventos (`printh 65 01 CC 00 FF FF FF` al soltar; además `play 1,0,0` en *Touch Press*)
+
+| CC  | Botón           |     | CC  | Botón        |
+|---  |---              |---  |---  |---           |
+| 01  | `v_bajo`        |     | 05  | `v_acuse`    |
+| 02  | `v_alto`        |     | 06  | `b_volver`   |
+| 03  | `v_retardo`     |     | FE  | página cargada (*Postinitialize*) |
+| 04  | `v_histeresis`  |     |     |              |
+
+### Qué escribe la Pi
+
+- `v_bajo`, `v_alto`, `v_retardo`, `v_histeresis`, `v_acuse`: el valor vigente con su unidad
+  (`20.0 %`, `92.0 %`, `10 s`, `0.5 %`, `120 s`). Al volver del teclado los refresca.
+- `h1` a `h6`: las 6 alarmas más recientes de los dos sensores, la más nueva arriba, con el formato
+  `DD/MM HH:MM S1 BAJO` (sensor 1 o 2; BAJO o ALTO). Las **activas** con `pco` = alarma (51427) y las
+  ya cerradas con `pco` = texto_suave (25423). Si hay menos de 6, el resto queda vacío.
+- `b_volver`: la Pi ordena `page principal`.
+
+## 9. Cómo probar lo construido
 
 1. En el editor, botón **Debug**: simula la pantalla sin dispositivo para revisar el diseño.
 2. Guardar y **Compile**: genera el `.tft` (ruta en *File → Open build folder*).
@@ -242,8 +367,7 @@ probar (otro formato de audio o el canal 0).
 4. Conectar la pantalla a la Pi y correr `tools/banco/sonda_nextion.py` (debe responder el modelo).
 5. Probar los eventos con el emulador y con la pantalla real.
 
-## 8. Páginas que faltan (etapas siguientes)
+## 10. Páginas que faltan (etapas siguientes)
 
-alarmas (umbrales, acuse, historial), config (intervalos, habilitar sensores), red (estado, IP,
-WiFi), calibracion (guiada), sistema (base de datos, reinicios, salud, versión), teclado (numérico,
-para el PIN y los valores) y reportes (exportar a memoria USB).
+config (intervalos, habilitar sensores), red (estado, IP, WiFi), calibracion (guiada), sistema (base de
+datos, reinicios, salud, versión) y reportes (exportar a memoria USB).

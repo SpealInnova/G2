@@ -220,3 +220,16 @@ decisión están en `MEMORIA_TECNICA.md`.
 - Herramienta tools/publicar_pantalla.py (hito de la pantalla): copia el .tft a nextion/build/ con su
   version y registra las huellas SHA-256 en nextion/MANIFIESTO.md; una version publicada es inmutable.
   Especificacion: largo maximo de los textos (txt_maxl) y estado inicial de est_*. 146 pruebas pasan.
+- Alarmas por sensor (D-032): cada sensor con su alarma, aviso visual (recuadro rojo, parpadea hasta
+  acusar) y sonido; Acusar acusa todas; los relevos no dependen del acuse.
+- Decisiones del usuario (D-032): Acusar acusa ambos sensores y el sonido; un relevo por sensor
+  (relevo 1 = sensor 1, relevo 2 = sensor 2); la falla del equipo ya no tiene relevo.
+- Relevos (D-033): placa RPi Relay Board de 3 relevos, uno por alarma (oxígeno bajo y alto, de
+  cualquier sensor), energizados en normal; riesgo del estado por omisión de los pines y capas de
+  defensa por verificar en la placa real. Sustituye "un relevo por sensor" de D-032.
+- Especificación del HMI: páginas teclado (PP 06) y alarmas (PP 01), fondo de páginas interiores
+  (`tools/generar_fondo_interno.py`) y sonido de alarma (`tools/generar_sonido_alarma.py`).
+- Diagnóstico (D-033): reinicio de la Pi sin disparar alarmas; opciones A (estricta), B (sin hardware)
+  y C (relevo 3 "fuera de servicio" con retardo de ~2 min); pendiente de decisión y de medir la placa.
+- Herramienta de banco tools/banco/pantalla.py: envia ordenes a la Nextion (p. ej. page teclado) y muestra los
+  toques decodificados con los codigos de la especificacion; 8 pruebas del decodificador.

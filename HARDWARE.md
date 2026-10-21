@@ -105,8 +105,9 @@ High-Precision AD HAT con ADS1263: 10 canales (5 pares diferenciales), 32 bits, 
 | ADC: CS / DRDY / RESET | 22 / 17 / 18 | Verificado (Waveshare) |
 | I²C (SDA / SCL) | 2 / 3 | Propuesta |
 | Nextion (TX / RX) | 14 / 15 (UART0, `/dev/serial0`) | Propuesta |
-| Relé 1 (alarma de oxígeno) | 23 | Propuesta |
-| Relé 2 (falla del equipo) | 24 | Propuesta |
+| Relé 1 (oxígeno bajo) | 26 (pin 37) | Según la wiki de Waveshare; función decidida (D-033) |
+| Relé 2 (oxígeno alto) | 20 (pin 38) | Según la wiki de Waveshare; función decidida (D-033) |
+| Relé 3 (libre; propuesta: equipo sin vigilancia) | 21 (pin 40) | Según la wiki de Waveshare |
 | LED de alarma | 25 | Propuesta |
 
 Notas:
@@ -153,11 +154,13 @@ Notas:
 ## 7. Salidas
 
 - Los **dos relés activan alarmas de corriente alterna (AC)** (confirmado por el
-  usuario). Roles propuestos, por confirmar: **relé 1 = alarma de oxígeno** (alto o
-  bajo) y **relé 2 = falla del equipo**, energizado en estado normal, de modo que un
-  corte de energía, un reinicio o una caída del servicio se vea como falla (práctica
-  habitual en equipos de alarma). Costo: una bobina energizada de forma continua
-  consume corriente; medirlo.
+  usuario). Roles **decididos por el usuario** (D-033): placa **RPi Relay Board** de 3 relés; **relé 1 = oxígeno
+  bajo** (cualquiera de los dos sensores), **relé 2 = oxígeno alto** (cualquiera de los dos) y relé 3
+  libre (propuesta: equipo sin vigilancia). Trabajan **energizados en normal**; el control de la
+  placa es de **nivel bajo**, así que hay que forzar los pines 26, 20 y 21 a alto durante el arranque
+  y cuando el programa se detenga (ver las defensas de D-033). Los aparatos de alarma van en el
+  contacto normalmente cerrado (NC). Tres fuentes separadas (Pi, pantalla, periféricos): GND común
+  entre las señales de la Pi y la placa.
 - **LED de alarma** de estado local.
 - No hay zumbador por GPIO: el aviso sonoro es el de la Nextion (D-020). Si `g2-ui`
   falla no suena; un relé puede manejar un zumbador externo o el panel de alarmas del
