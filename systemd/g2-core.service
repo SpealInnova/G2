@@ -1,0 +1,47 @@
+# g2-core: lectura de los sensores, alarmas y almacenamiento (D-005, D-034).
+#
+# Se instala con scripts/instalar_servicios.sh. Decisiones (ver MEMORIA_TECNICA.md):
+#  * Type=notify + WatchdogSec: systemd espera el aviso de "listo" y REINICIA el servicio si el ciclo
+#    deja de dar su latido; el latido se envia solo tras cada paso completo (watchdog por progreso, D-012).
+#  * Restart=always sin limite de reinicios: una vigilancia detenida es peor que un reinicio repetido.
+#    La escalada a reiniciar la Raspberry Pi o al modo seguro (D-012) queda pendiente porque depende de
+#    la decision de los relevos (D-033).
+#  * No depende de la red: debe medir y guardar sin conexion.
+#  * Endurecimiento minimo: sin nuevos privilegios, /tmp privado y el sistema de archivos de solo lectura
+#    salvo la carpeta de datos.
+[Unit]
+Description=G2 - nucleo (lectura, alarmas y almacenamiento)
+Documentation=https://github.com/SpealInnova/G2
+After=local-fs.target
+# Sin limite de reinicios (va en [Unit]): ver el comentario de arriba.
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=pi
+Group=pi
+# lgpio crea archivos temporales en el directorio de trabajo: debe poder escribirse.
+WorkingDirectory=/home/pi/g2/datos
+Environment=PYTHONPATH=/home/pi/g2/dev/src
+Environment=PYTHONUNBUFFERED=1
+Environment=G2_BD=/home/pi/g2/datos/g2.db
+# Carpeta de comunicacion con g2-ui (en memoria): estado.json y ordenes/ (src/g2/ipc.py).
+Environment=G2_RUN=/run/g2
+RuntimeDirectory=g2
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 -m g2.nucleo --imprimir-cada 300
+Restart=always
+RestartSec=2
+# El codigo 2 es "no hay sensores habilitados": un error de configuracion, reiniciar no lo arregla.
+RestartPreventExitStatus=2
+WatchdogSec=30
+TimeoutStartSec=60
+TimeoutStopSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/pi/g2/datos
+
+[Install]
+WantedBy=multi-user.target

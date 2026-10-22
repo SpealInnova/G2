@@ -21,18 +21,18 @@ from __future__ import annotations
 import os
 import select
 import sys
-import termios
 import time
 
 PUERTO = "/dev/serial0"
 VELOCIDADES = [9600, 115200, 57600, 38400, 19200, 4800, 2400]
 FIN = b"\xff\xff\xff"
-_BAUDIOS = {9600: termios.B9600, 115200: termios.B115200, 57600: termios.B57600,
-            38400: termios.B38400, 19200: termios.B19200, 4800: termios.B4800, 2400: termios.B2400}
 
 
 def preguntar(velocidad: int, espera_s: float = 1.2) -> bytes:
     """Abre el puerto a ``velocidad``, envia ``connect`` y devuelve lo que responda."""
+    import termios                                          # solo existe en Linux (la Pi): las pruebas en el PC no lo necesitan
+    baudios = {9600: termios.B9600, 115200: termios.B115200, 57600: termios.B57600,
+               38400: termios.B38400, 19200: termios.B19200, 4800: termios.B4800, 2400: termios.B2400}
     fd = os.open(PUERTO, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     try:
         atributos = termios.tcgetattr(fd)
@@ -40,7 +40,7 @@ def preguntar(velocidad: int, espera_s: float = 1.2) -> bytes:
         atributos[1] = 0                                    # oflag
         atributos[2] = termios.CS8 | termios.CREAD | termios.CLOCAL      # 8N1
         atributos[3] = 0                                    # lflag: modo crudo
-        atributos[4] = atributos[5] = _BAUDIOS[velocidad]
+        atributos[4] = atributos[5] = baudios[velocidad]
         termios.tcsetattr(fd, termios.TCSANOW, atributos)
         termios.tcflush(fd, termios.TCIOFLUSH)
         os.write(fd, FIN + b"connect" + FIN)                # los 3 FF iniciales limpian el bufer
@@ -56,11 +56,16 @@ def preguntar(velocidad: int, espera_s: float = 1.2) -> bytes:
 
 
 def interpretar(respuesta: bytes) -> str | None:
-    """Texto de la respuesta ``comok`` si la hay."""
-    texto = respuesta.replace(FIN, b"\n").decode("latin-1", errors="replace")
+    """Texto de la respuesta ``comok`` si la hay.
+
+    Se descartan los bytes nulos: en la prueba real (2026-10-21) la pantalla respondio con un byte
+    nulo suelto dentro de la palabra (``c<NUL>omok ...``), asi que se busca ``comok`` despues de
+    quitarlos y no solo al principio de la linea.
+    """
+    texto = respuesta.replace(b"\x00", b"").replace(FIN, b"\n").decode("latin-1", errors="replace")
     for linea in texto.splitlines():
-        if linea.startswith("comok"):
-            return linea
+        if "comok" in linea:
+            return linea[linea.index("comok"):]
     return None
 
 
@@ -84,7 +89,8 @@ def main() -> int:
                 print(f"   modelo           : {partes[2]}")
                 print(f"   firmware         : {partes[3]}")
                 print(f"   numero de serie  : {partes[5]}")
-                print(f"   memoria flash    : {int(partes[6]) / 1024 / 1024:.0f} MB")
+                # el campo viene como "128974848-0": los bytes de flash y un sufijo
+                print(f"   memoria flash    : {int(partes[6].split('-')[0]) / 1024 / 1024:.0f} MB")
                 print(f"   velocidad (baud) : {velocidad}")
             return 0
     print("\nLa pantalla no respondio a ninguna velocidad: revise la conexion (TX y RX cruzados, "

@@ -177,6 +177,14 @@ erDiagram
         INTEGER habilitado
         TEXT notas "opcional"
     }
+    pin_acceso {
+        TEXT tipo PK
+        BLOB sal
+        BLOB huella
+        INTEGER iteraciones
+        INTEGER actualizado_ms
+        TEXT actor "opcional"
+    }
     salud {
         INTEGER id PK
         INTEGER ts_ms

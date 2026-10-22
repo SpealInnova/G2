@@ -241,3 +241,34 @@ decisión están en `MEMORIA_TECNICA.md`.
 - Navegación de la pantalla verificada por el usuario (principal y alarmas con `page`). Multímetro 1.030 V = ADC
   1029.99 mV. ZeroTier instalado en la Pi desde el repositorio oficial con la llave verificada y unido a la red
   privada del usuario, pendiente de autorizar el nodo (D-035). SSH por contraseña se conserva como canal de soporte.
+- ZeroTier verificado: el nodo quedó autorizado (IP asignada) y el acceso por SSH funciona con la misma huella.
+- Pantalla conectada a la Pi: NX8048P050_011R, firmware 293, 9600 baudios; la sonda ahora tolera el byte nulo
+  suelto de su respuesta. Cambio de página, lectura de `proto` y escritura de textos verificados con la pantalla real.
+- g2-core como servicio de systemd con watchdog por progreso (D-036): probado congelando el proceso a propósito.
+- g2-ui primera etapa y comunicación por archivos en /run/g2 (D-037): página principal, alarmas (lectura), Acusar,
+  parpadeo y sonido; 272 pruebas, también en la Pi; ambos servicios instalados y habilitados en la Pi.
+- Fotos de la pantalla real (usuario): la principal muestra los datos en vivo y la de alarmas los ajustes y el
+  historial; toques de Alarmas, Volver y Acusar verificados en el registro de g2-ui. Detectado: la pantalla trae
+  navegación temporal y carga cada página dos veces (con 3 avisos de atributo inválido); hay que quitarla del HMI.
+- Corregido el exceso de revisiones del valor extremo de las alarmas (191 en una sola); ahora se escribe solo si
+  cambia 0.5 % y al cerrar o apagar. 276 pruebas, también en la Pi.
+- PIN de la pantalla (D-038): migración 005 (tabla `pin_acceso`, no sincronizada), módulo `g2.seguridad.pin`, comandos
+  `g2ctl pin-fijar` y `pin-estado`, teclado con PIN en `g2-ui` y órdenes `pin_resultado` y `config_fijar` en el núcleo.
+  Reglas confirmadas por el usuario: vigencia 5 min, 3 fallos y bloqueo de 60 s. PIN de fábrica aprovisionado en la Pi
+  por SSH (no está en el repositorio). 317 pruebas, también en la Pi.
+- Decisiones sobre las páginas restantes (WiFi escribiendo nombre y contraseña, calibración con ambos métodos, CSV con
+  huellas SHA-256, PIN en todo lo delicado) y plan por etapas (D-039). Etapa 1 del lado de la Pi: salud de la Pi,
+  órdenes sensor_habilitar, sistema_accion y auditoria_resultado, páginas confirmar, sistema y config, regla de polkit.
+- Prueba real de reiniciar servicios por la vía de la pantalla: reveló que el comando moría con el núcleo; corregido
+  con --no-block y el núcleo al final. El usuario probó el PIN en la pantalla real (fallo, acierto y cambios de ajustes).
+  374 pruebas, también en la Pi.
+- Configuración de la red (D-040): gestor con reversión automática sobre NetworkManager, servicio de red en un hilo,
+  órdenes red_configurar y red_buscar, la contraseña nunca se registra, páginas `red` y `texto` (teclado completo por capas)
+  en la interfaz y su especificación del HMI, polkit ampliado y detección automática de la velocidad del puerto serie.
+  461 pruebas, también en la Pi. Comprobados en la Pi: estado, búsqueda y permisos de NetworkManager.
+- Hallazgo grave (D-041): la pantalla se reiniciaba cada 3 s al sonar la alarma con `volume=70` (el altavoz consume más de lo
+  que aguanta su fuente). Aislado con la herramienta de banco (70 reinicia; 10 a 60 no). La Pi ahora fija el volumen (50) al
+  arrancar y en cada encendido de la pantalla, y una protección baja el volumen o calla el sonido si reinicia. 473 pruebas.
+- D-042: la contraseña de la red ahora se ve al escribirla (botón Ocultar/Ver); especificación: `play 1,0,0` obligatorio en las 40 teclas
+  y en todos los botones de `texto`; documentados los requisitos para que la clave viaje segura desde la plataforma (TLS verificado,
+  órdenes firmadas con caducidad, autorización, sin rastro en la plataforma y cifrado de extremo a extremo). 473 pruebas.

@@ -160,6 +160,38 @@ def cmd_sensor_serie(args) -> int:
     return 0
 
 
+def cmd_pin_fijar(args) -> int:
+    """Aprovisiona un PIN (D-038). El PIN NUNCA va como argumento (quedaria en el historial del shell y en la
+    lista de procesos): se pide por teclado sin mostrarlo, o con ``--desde-stdin`` se lee de la entrada."""
+    import getpass
+    if args.desde_stdin:
+        pin = sys.stdin.readline().strip()
+    else:
+        pin = getpass.getpass("PIN nuevo (4 a 8 digitos): ")
+        if getpass.getpass("Repita el PIN: ") != pin:
+            print("Los PIN no coinciden: no se cambio nada.", file=sys.stderr)
+            return 2
+    almacen = _almacen_escritura(_ruta(args))
+    try:
+        almacen.pin_fijar(args.tipo, pin, origen="local", actor=args.actor)
+    except Exception as error:                                   # formato invalido, p. ej.
+        print(f"No se cambio el PIN: {error}", file=sys.stderr)
+        return 2
+    print(f"PIN de {args.tipo} guardado (solo su huella; el valor no se registra en ninguna parte).")
+    almacen.cerrar()
+    return 0
+
+
+def cmd_pin_estado(args) -> int:
+    almacen = _almacen_lectura(_ruta(args))
+    tipos = almacen.pin_tipos()
+    activo = almacen.pin_activo()
+    print(f"PIN de fabrica: {'si' if 'fabrica' in tipos else 'no'}   PIN de la plataforma: "
+          f"{'si' if 'plataforma' in tipos else 'no'}   rige: {activo['tipo'] if activo else 'NINGUNO (la pantalla no permite cambios)'}")
+    almacen.cerrar()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -186,6 +218,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("sensor-serie")
     p.add_argument("id", type=int); p.add_argument("serie")
     p.set_defaults(f=cmd_sensor_serie)
+
+    p = sub.add_parser("pin-fijar", help="guarda un PIN de la pantalla (se pide sin mostrarlo)")
+    p.add_argument("--tipo", choices=("fabrica", "plataforma"), default="fabrica")
+    p.add_argument("--actor", default="g2ctl")
+    p.add_argument("--desde-stdin", action="store_true", help="lee el PIN de la entrada estandar (aprovisionamiento por SSH)")
+    p.set_defaults(f=cmd_pin_fijar)
+    sub.add_parser("pin-estado", help="que PIN rige (nunca muestra el valor)").set_defaults(f=cmd_pin_estado)
 
     args = ap.parse_args(argv)
     return args.f(args)

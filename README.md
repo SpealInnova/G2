@@ -14,7 +14,8 @@ Nextion y plataforma web **sp-peek.com**. Primera versión para **hospitales**.
 | Base de datos interna (SQLite): esquema, auditoría con huellas SHA-256, cola de envío, catálogo de configuración y capa de datos | **Hecho** y probado |
 | Convertidor analógico-digital ADS1263 (controlador, emulador y herramientas de banco) | **Hecho**; validado con una fuente de prueba |
 | Raspberry Pi preparada (SPI, I²C, UART) y herramienta `g2ctl` | **Hecho** |
-| Núcleo `g2-core` (lectura, promedio, alarmas, almacenamiento) | Primera versión hecha y probada con el ADC real; faltan el servicio, los relevos y la pantalla |
+| Núcleo `g2-core` (lectura, promedio, alarmas, almacenamiento) | Hecho como servicio de systemd con watchdog y probado con el ADC real; faltan los relevos por GPIO y la salud de la Pi |
+| Interfaz `g2-ui` de la pantalla | Hechas del lado de la Pi: principal, alarmas, config, sistema, confirmar, red y teclado de texto (PIN, acuse, reinicios, cambio de red con reversión); faltan reportes y calibración |
 | Servicio de envío a la plataforma | Por construir (diseño en la memoria técnica) |
 | Pantalla Nextion | Páginas principal, teclado y alarmas listas (v0.2.0); faltan configuración, red, calibración, sistema y reportes |
 | Alertas por correo en la plataforma | Construidas en una rama de la plataforma, sin publicar |
@@ -56,9 +57,18 @@ publicados (no se edita a mano).
 
 <!-- NOVEDADES:INICIO -->
 
+### 2026-10-22
+
+- **Pantalla Nextion v0.3.0 y servicios g2-ui y g2-core: PIN, red, sistema y configuración**
+  - Interfaz g2-ui (src/g2/pantalla): la pantalla es "tonta" y la Pi manda; páginas principal, alarmas, teclado (PIN y valores), confirmar, sistema, configuración, red y teclado de texto completo con capas abc, ABC y símbolos. La con…
+  - PIN de acceso (D-038): se guarda solo su huella PBKDF2, vale 5 minutos y se bloquea 60 s tras 3 fallos; todas las acciones de cambio lo piden. El valor de fábrica no está en el repositorio.
+  - Servicios systemd con vigilancia por progreso (g2-core y g2-ui), regla polkit para reiniciar servicios y gestionar la red sin sudo, e instalador scripts/instalar_servicios.sh; comunicación por archivos en /run/g2 con permisos 060…
+  - Salud de la Raspberry Pi (CPU, memoria, disco, base y cola) con alarmas del sistema, y verificación de la cadena de auditoría desde la pantalla; migraciones 005 a 007.
+  - Cambio de red desde la pantalla (D-040) con reversión automática si la red nueva falla, apoyo a la primera instalación sin red, y la contraseña sin rastro en base, eventos, auditoría ni registros. Transporte seguro desde la plata…
+
 ### 2026-10-21
 
-- **Núcleo g2-core, primera versión: lectura, alarmas por sensor y almacenamiento**
+- **Núcleo g2-core, primera versión: lectura, alarmas por sensor y almacenamiento** (`73bb374`)
   - Paquete src/g2/nucleo y arranque con python3 -m g2.nucleo: convierte la tensión de cada sensor a % de oxígeno (10 mV por %, con la corrección de la calibración vigente) y guarda un registro por sensor cada 15 s con promedio, míni…
   - Motor de alarmas por sensor (D-032): oxígeno bajo, oxígeno alto y sensor sin señal, más la discrepancia entre sensores como alarma del sistema; con retardo, histéresis, acuse que silencia el sonido 2 minutos y relevos de oxígeno…
   - Lectura del ADS1263 que no se detiene ante errores y reconfigura el chip si se reinicia; salidas de los relevos solo emuladas, pendientes de la decisión de D-033; cierre ordenado que guarda el intervalo en curso.

@@ -105,6 +105,39 @@ class PruebasRetardoEHisteresis(BaseMotor):
             self.ev(20.9, v, 20 + t)
         self.assertEqual(self.alarma(ALM_ALTO, self.s2)["valor_pico"], 99.0)
 
+    def test_el_ruido_menor_al_umbral_no_escribe_revisiones(self) -> None:
+        self.ev(15.0, 20.9, 0)
+        self.ev(15.0, 20.9, 10)
+        rev = self.alarma(ALM_BAJO, self.s1)["rev"]
+        for i in range(1000):                                    # ruido de +-0.05 %: nunca llega a 0.5 %
+            self.ev(15.0 - 0.05 * (i % 2), 20.9, 11 + i * 0.1)
+        self.assertEqual(self.alarma(ALM_BAJO, self.s1)["rev"], rev)
+
+    def test_un_cambio_grande_del_extremo_si_se_guarda_al_momento(self) -> None:
+        self.ev(15.0, 20.9, 0)
+        self.ev(15.0, 20.9, 10)
+        self.ev(14.4, 20.9, 11)                                  # 0.6 de diferencia
+        self.assertEqual(self.alarma(ALM_BAJO, self.s1)["valor_pico"], 14.4)
+
+    def test_al_cerrar_el_extremo_queda_exacto(self) -> None:
+        self.ev(15.0, 20.9, 0)
+        self.ev(15.0, 20.9, 10)
+        self.ev(14.8, 20.9, 11)                                  # no se guarda todavia (0.2 < 0.5)
+        self.assertEqual(self.alarma(ALM_BAJO, self.s1)["valor_pico"], 15.0)
+        self.ev(25.0, 20.9, 12)                                  # se normaliza: cierra la alarma
+        fila = self.alarma(ALM_BAJO, self.s1)
+        self.assertEqual((fila["estado"], fila["valor_pico"]), ("cerrada", 14.8))
+
+    def test_guardar_picos_escribe_los_pendientes_antes_de_apagar(self) -> None:
+        self.ev(15.0, 20.9, 0)
+        self.ev(15.0, 20.9, 10)
+        self.ev(14.7, 20.9, 11)
+        self.assertEqual(self.alarma(ALM_BAJO, self.s1)["valor_pico"], 15.0)
+        self.m.guardar_picos()
+        self.assertEqual(self.alarma(ALM_BAJO, self.s1)["valor_pico"], 14.7)
+        self.m.guardar_picos()                                   # repetir no escribe otra revision
+        self.assertEqual(self.alarma(ALM_BAJO, self.s1)["rev"], 2)         # 1 al abrir + 1 por el extremo
+
     def test_retardo_cero_activa_de_inmediato(self) -> None:
         self.ev(15.0, 20.9, 0, Umbrales(retardo_s=0))
         self.assertEqual(self.alarma(ALM_BAJO, self.s1)["estado"], "activa")

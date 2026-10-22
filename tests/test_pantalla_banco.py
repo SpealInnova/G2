@@ -24,7 +24,7 @@ class PruebasDecodificador(unittest.TestCase):
 
     def test_codigos_desconocidos_no_se_ocultan(self) -> None:
         self.assertIn("control?7F", P.decodificar(bytes([0x65, 0x06, 0x7F, 0x00])))
-        self.assertIn("pagina?09", P.decodificar(bytes([0x65, 0x09, 0x01, 0x00])))
+        self.assertIn("pagina?7E", P.decodificar(bytes([0x65, 0x7E, 0x01, 0x00])))
         self.assertIn("desconocida", P.decodificar(bytes([0x42, 0x01])))
 
     def test_respuestas_a_get(self) -> None:

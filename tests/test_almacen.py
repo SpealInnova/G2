@@ -319,7 +319,7 @@ class PruebasEstadoYAuditoria(BaseAlmacen):
                                 o2_min=1.0, o2_max=1.0, mv_prom=10.0)
         self.a.abrir_alarma("ALM_O2_BAJO", sensor_id=s, valor=19.0)
         e = self.a.estado()
-        self.assertEqual(e["version_esquema"], 4)
+        self.assertEqual(e["version_esquema"], 7)
         self.assertEqual((e["filas"]["lectura"], e["filas"]["arranque"]), (1, 1))
         self.assertEqual(e["alarmas_abiertas"], 1)
         self.assertGreater(e["pendientes_envio"], 0)

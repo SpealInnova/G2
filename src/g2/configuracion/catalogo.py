@@ -73,6 +73,22 @@ _LISTA = [
        "sigue activa al vencer, el sonido vuelve a sonar. No afecta a los relevos (D-031).",
        "s", 10, 3600),
 
+    # --- Volumen de la pantalla (D-041) ------------------------------------------------------------
+    _c("pantalla.volumen", "entero", 50,
+       "Volumen del altavoz de la pantalla (0 a 100). Con 70 la pantalla se reinicia al sonar: la fuente no alcanza.",
+       "%", 0, 100, editable_por=frozenset({"plataforma", "local"})),
+
+    # --- PIN de la pantalla (D-038): no se pueden cambiar desde la propia pantalla -----------------
+    _c("pantalla.pin_vigencia_s", "entero", 300,
+       "Tiempo que vale el PIN una vez aceptado, antes de pedirlo otra vez.", "s", 10, 3600,
+       editable_por=frozenset({"plataforma", "local"})),
+    _c("pantalla.pin_intentos", "entero", 3,
+       "Intentos fallidos de PIN seguidos antes de bloquear el teclado.", "", 1, 10,
+       editable_por=frozenset({"plataforma", "local"})),
+    _c("pantalla.pin_bloqueo_s", "entero", 60,
+       "Tiempo que el teclado queda bloqueado tras los intentos fallidos.", "s", 10, 3600,
+       editable_por=frozenset({"plataforma", "local"})),
+
     # --- Salud de la Raspberry Pi (D-011, D-013, D-027) ------------------------------------------
     _c("salud.intervalo_min", "entero", 30, "Cada cuanto se registra el estado de salud.",
        "min", 1, 1440),

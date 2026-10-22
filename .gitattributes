@@ -2,6 +2,8 @@
 # un script con CRLF falla en la Raspberry Pi.
 *.sh  text eol=lf
 *.sql text eol=lf
+*.service text eol=lf
+*.rules text eol=lf
 # Archivos de Nextion: el .HMI (proyecto, ~9 MB) y el .tft (compilado) van con Git LFS: Git guarda
 # un puntero pequeno y el archivo real queda en el almacen LFS de GitHub, asi el repositorio no
 # crece con cada version. El editor mantiene el .HMI bloqueado mientras esta abierto: se sube

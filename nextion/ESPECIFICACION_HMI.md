@@ -37,6 +37,8 @@ analizador: `65 PP CC 00 FF FF FF` (bytes en hexadecimal), donde `PP` es el **c�
 | 05 | sistema | | | |
 | 06 | teclado | | | |
 | 07 | reportes | | | |
+| 08 | confirmar | | | |
+| 09 | texto | | | |
 
 - **Cómo se escribe en el editor:** en el evento *Touch Release* de cada botón, **la primera línea**
   es `printh 65 PP CC 00 FF FF FF` con los códigos de la tabla de esa página (por ejemplo
@@ -93,21 +95,21 @@ más largo de cada caja cabe (`100.0` en `o2_*`, `CALIBRANDO` en `est_*`, `COLA 
 
 ### Colores (RGB565 decimal)
 
-| Nombre | Valor | Uso |
-|---|---|---|
-| fondo | 63423 | fondo de la página |
-| tarjeta | 65535 | tarjetas y avisos |
-| texto | 6438 | texto principal |
-| texto_suave | 25423 | títulos de tarjeta |
-| barra | 6504 | barra superior |
-| normal | 1128 | estado normal (verde) |
-| alarma | 51427 | alarma alta o baja (rojo) |
-| aviso | 62880 | advertencia y botón de acuse (ámbar) |
-| calibrando | 726 | calibración en curso (azul) |
-| inactivo | 27568 | sin señal o deshabilitado (gris) |
-| boton | 59197 | botón en reposo |
-| boton_pulsado | 48730 | botón pulsado |
-| blanco | 65535 | texto sobre barra y estados |
+| Nombre          | Valor  | Uso                                  |
+|---              |---     |---                                   |
+| fondo           | 63423  | fondo de la página                   |
+| tarjeta         | 65535  | tarjetas y avisos                    |
+| texto           | 6438   | texto principal                      |
+| texto_suave     | 25423  | títulos de tarjeta                   |
+| barra           | 6504   | barra superior                       |
+| normal          | 1128   | estado normal (verde)                |
+| alarma          | 51427  | alarma alta o baja (rojo)            |
+| aviso           | 62880  | advertencia y botón de acuse (ámbar) |
+| calibrando      | 726    | calibración en curso (azul)          |
+| inactivo        | 27568  | sin señal o deshabilitado (gris)     |
+| boton           | 59197  | botón en reposo                      |
+| boton_pulsado   | 48730  | botón pulsado                        |
+| blanco          | 65535  | texto sobre barra y estados          |
 
 El estado nunca se indica **solo con color**: siempre va escrito (NORMAL, ALTA, BAJA...).
 
@@ -214,7 +216,7 @@ Cada sensor se avisa por separado. Para el sensor N, la Pi escribe:
 
 | Situación | `est_N` | `o2_N` |
 |---|---|---|
-| Alarma nueva (sin acusar) | texto `ALTA` o `BAJA`, `bco` = alarma, `pco` = blanco; **alterna** `bco` entre alarma (51427) y blanco cada segundo | `pco` = alarma (51427) |
+| Alarma nueva (sin acusar) | texto `ALTA` o `BAJA`; **parpadea** a 1 Hz alternando `bco` = alarma (51427) y `pco` = blanco con los colores **invertidos** (`bco` = blanco y `pco` = alarma), así el texto se lee en las dos fases | `pco` = alarma (51427) |
 | Alarma acusada | `bco` = alarma **fijo** | `pco` = alarma |
 | Sin alarma | texto de su estado normal | `pco` = texto (6438) |
 
@@ -232,11 +234,14 @@ tono de 2 kHz, 70 ms, mono, 16 bits, 16 kHz) se genera con `tools/generar_sonido
 2. En el evento **Touch Press** de cada botón de navegación (y de Acusar), poner `play 1,0,0`
    (canal 1, audio 0, sin repetir). El **canal 0 queda reservado para las alarmas**, así el pitido
    de un toque no corta una alarma que esté sonando.
-3. Volumen: en la pestaña **Program.s** (se ejecuta al encender la pantalla) fijar `volume=70`
+3. Volumen: en la pestaña **Program.s** (se ejecuta al encender la pantalla) fijar `volume=50`
    (0 a 100; la variable se llama `volume`, no `vol`: con `vol` el editor da *Invalid Variables*).
    Es persistente: la pantalla la recuerda y la usa como volumen al encender. Si el editor no
    admite la asignación en Program.s, ponerla en el *Postinitialize* de `principal`.
-   El valor definitivo se ajusta probando con la pantalla real.
+   **No suba de 60.** Con `volume=70` la pantalla **se reinicia sola al sonar el audio** (probado el 2026-10-21: con 70
+   se reinicia; con 50 y 60, no): el altavoz consume más de lo que aguanta la fuente de la pantalla. Aun así, la Pi
+   **fija el volumen al arrancar y cada vez que la pantalla enciende** (clave `pantalla.volumen`, 50 por omisión), así que
+   un volumen alto en el `.HMI` solo dura hasta que la interfaz arranca.
 4. Regla para las páginas siguientes: **todo botón que el usuario pulse lleva `play 1,0,0` en su
    Touch Press**; los componentes que solo muestran no.
 
@@ -307,10 +312,14 @@ Todos los botones llevan además `play 1,0,0` en *Touch Press*.
    Si es válido lo aplica con origen `pantalla`, y vuelve a la página de origen. Si no, escribe el
    motivo en `msg` con `pco` = alarma (51427) y deja la página abierta.
 5. **Cancelar:** vuelve sin cambiar nada.
-6. **PIN:** `valor` muestra un asterisco por dígito. Intentos fallidos y bloqueo (propuesta: 3 fallos,
-   60 s de bloqueo) los lleva la Pi, y cada intento queda como evento. Cuánto tiempo vale el PIN
-   aceptado antes de pedirlo otra vez (propuesta: 5 minutos) está por confirmar; ambos valores
-   serán claves del catálogo cuando se construya `g2-ui`.
+6. **PIN (confirmado, D-038):** `valor` muestra un asterisco por dígito (de 4 a 8). El PIN **vale 5 minutos** una vez
+   aceptado; **3 intentos fallidos** bloquean el teclado **60 s** (mientras tanto las teclas no hacen nada y `msg`
+   cuenta los segundos). Los tres valores son claves del catálogo (`pantalla.pin_vigencia_s`, `pantalla.pin_intentos`
+   y `pantalla.pin_bloqueo_s`) que **no se pueden cambiar desde la propia pantalla**. La Pi verifica el PIN contra
+   su huella y solo avisa al núcleo el resultado (aceptado, fallido o bloqueado) para dejarlo como evento de seguridad.
+7. **Título de la barra:** la Pi escribe `titulo` según el modo: `Ingrese el PIN` o `Ajustar alarma`. `t_titulo` dice
+   `PIN` o el ajuste (por ejemplo `Oxígeno bajo (%)`), y `msg` la ayuda (`Actual: 20.0 %. Entre 0 y 100 % O2`) o el
+   error en rojo (`PIN incorrecto. Intentos restantes: 2`, `Debe ser menor que el máximo (92 %)`...).
 
 ## 8. Página `alarmas` (PP = 01)
 
@@ -357,7 +366,188 @@ Las cinco filas de ajuste corresponden, en orden, a las claves `alarma.o2_bajo_p
   ya cerradas con `pco` = texto_suave (25423). Si hay menos de 6, el resto queda vacío.
 - `b_volver`: la Pi ordena `page principal`.
 
-## 9. Cómo probar lo construido
+## 9. Página `confirmar` (PP = 08)
+
+Pregunta de **Sí / No** compartida por todas las acciones delicadas (apagar un sensor, reiniciar, calibrar). La Pi
+escribe la pregunta y el detalle; la pantalla solo avisa qué botón se tocó.
+
+**Fondo:** `interna.png` (`fondo`, `pic` = 1). Los botones llevan `style` = flat, `sta` = solid color y `pco2` = `pco`.
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Confirmar | blanco | crop image (`picc` 1) | 30; centrado |
+| `t_pregunta` | Text | 32 | 90 | 736 | 130 | 1 | (vacío) | texto | tarjeta | 80; centrado, `isbr`=True |
+| `t_detalle` | Text | 32 | 230 | 736 | 110 | 0 | (vacío) | texto_suave | tarjeta | 160; centrado, `isbr`=True |
+| `b_no` | Button | 32 | 364 | 352 | 72 | 4 | No, cancelar | texto | boton | `bco2` = boton_pulsado |
+| `b_si` | Button | 416 | 364 | 352 | 72 | 4 | Sí, continuar | texto | aviso (62880) | `bco2` = boton_pulsado |
+
+**Eventos** (`printh 65 08 CC 00 FF FF FF` al soltar; además `play 1,0,0` en *Touch Press*): `b_si` = `01`, `b_no` = `02`,
+página cargada (*Postinitialize*) = `FE`.
+
+## 10. Página `sistema` (PP = 05)
+
+Muestra cómo está el equipo y ofrece las acciones de mantenimiento. **Todas las acciones piden el PIN** y las que
+interrumpen el servicio piden además confirmación. **Fondo:** `interna.png` (`fondo`, `pic` = 1).
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Sistema | blanco | crop image (`picc` 1) | 30; centrado |
+| `i1` a `i8` | Text | 32 | 84 + 44·n (n = 0 a 7) | 400 | 40 | 0 | (vacío) | texto | tarjeta | 40; `xcen`=0; una línea de información cada una |
+| `b_reportes` | Button | 448 | 84 | 320 | 56 | 4 | Reportes USB | texto | boton | `bco2` = boton_pulsado |
+| `b_servicios` | Button | 448 | 152 | 320 | 56 | 4 | Reiniciar servicios | texto | boton | |
+| `b_reiniciar` | Button | 448 | 220 | 320 | 56 | 4 | Reiniciar equipo | texto | boton | |
+| `b_auditoria` | Button | 448 | 288 | 320 | 56 | 4 | Verificar auditoría | texto | boton | |
+| `res` | Text | 448 | 348 | 320 | 36 | 0 | (vacío) | texto_suave | tarjeta | 40; centrado; resultado de la última acción |
+| `b_volver` | Button | 448 | 396 | 320 | 56 | 4 | Volver | texto | boton | |
+
+**Eventos** (`printh 65 05 CC 00 FF FF FF` al soltar; además `play 1,0,0` en *Touch Press*): `b_reportes` = `01`,
+`b_servicios` = `02`, `b_reiniciar` = `03`, `b_auditoria` = `04`, `b_volver` = `05`, página cargada = `FE`.
+
+**Qué escribe la Pi** en `i1` a `i8` (una línea cada una, máximo unas 30 letras para que quepan):
+
+| Línea | Ejemplo |
+|---|---|
+| `i1` | `Software 0.1.0-dev` |
+| `i2` | `Pantalla: protocolo 1` |
+| `i3` | `Encendido hace 3 d 4 h` |
+| `i4` | `CPU 46 °C   RAM 38 %` (en rojo si pasa el umbral) |
+| `i5` | `Disco libre 21.4 GB (72 %)` (en rojo si está bajo el umbral) |
+| `i6` | `Base 0.9 MB   Cola 1840` |
+| `i7` | `Núcleo OK · Pantalla OK` |
+| `i8` | `PIN: de fábrica` (o `de la plataforma`, o `SIN PIN`) |
+
+## 11. Página `config` (PP = 02)
+
+Ajustes generales del equipo. Cada cambio pide el PIN (la Pi abre el teclado, sección 7). Apagar un sensor pide además
+confirmación y **nunca se permite apagar el último sensor que queda**. **Fondo:** `interna.png` (`fondo`, `pic` = 1).
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Configuración | blanco | crop image (`picc` 1) | 30; centrado |
+| `h_aj` | Text | 32 | 84 | 368 | 28 | 0 | AJUSTES | texto_suave | tarjeta | 20; `xcen`=0 |
+| `l_guardado` | Text | 32 | 116 | 190 | 44 | 0 | Guardado datos | texto | tarjeta | 20; `xcen`=0 |
+| `l_pantalla` | Text | 32 | 168 | 190 | 44 | 0 | Pantalla | texto | tarjeta | 20; `xcen`=0 |
+| `l_discrepancia` | Text | 32 | 220 | 190 | 44 | 0 | Dif. sensores | texto | tarjeta | 20; `xcen`=0 |
+| `l_sensor1` | Text | 32 | 272 | 190 | 44 | 0 | Sensor 1 | texto | tarjeta | 20; `xcen`=0 |
+| `l_sensor2` | Text | 32 | 324 | 190 | 44 | 0 | Sensor 2 | texto | tarjeta | 20; `xcen`=0 |
+| `v_guardado` | Button | 228 | 116 | 172 | 44 | 4 | 15 s | texto | boton | `bco2` = boton_pulsado; `txt_maxl` 12 |
+| `v_pantalla` | Button | 228 | 168 | 172 | 44 | 4 | 1 s | texto | boton | |
+| `v_discrepancia` | Button | 228 | 220 | 172 | 44 | 4 | 0.5 % | texto | boton | |
+| `v_sensor1` | Button | 228 | 272 | 172 | 44 | 4 | ACTIVO | texto | boton | la Pi escribe `ACTIVO` o `APAGADO` |
+| `v_sensor2` | Button | 228 | 324 | 172 | 44 | 4 | ACTIVO | texto | boton | |
+| `b_volver` | Button | 32 | 392 | 368 | 56 | 4 | Volver | texto | boton | |
+
+| `h_eq` | Text | 432 | 84 | 336 | 28 | 0 | EQUIPO | texto_suave | tarjeta | 20; `xcen`=0 |
+| `e1` a `e4` | Text | 432 | 116 + 50·n (n = 0 a 3) | 336 | 44 | 0 | (vacío) | texto | tarjeta | 40; `xcen`=0; solo lectura |
+
+**Eventos** (`printh 65 02 CC 00 FF FF FF` al soltar; además `play 1,0,0` en *Touch Press*): `v_guardado` = `01`,
+`v_pantalla` = `02`, `v_discrepancia` = `03`, `v_sensor1` = `04`, `v_sensor2` = `05`, `b_volver` = `06`, página
+cargada = `FE`.
+
+**Qué escribe la Pi:** `v_guardado` y `v_pantalla` con su unidad (`15 s`, `1 s`); `v_discrepancia` (`0.5 %`);
+`v_sensor1` y `v_sensor2` (`ACTIVO` o `APAGADO`, este último con `pco` = alarma); `e1` a `e4`: `Nombre: ...`,
+`ID: ...`, `S1: modelo, serie` y `S2: modelo, serie` (`(sin definir)` si faltan).
+
+**Navegación desde `principal`:** `b_config` abre `config` y `b_sistema` abre `sistema` (la Pi lo ordena, como en
+`alarmas`). `reportes` se abre desde `sistema` y `red` y `calibracion` quedan para las etapas siguientes.
+
+## 12. Página `red` (PP = 03)
+
+Estado de la conexión y cambio de red. **Conectar a otra red** pide el PIN, luego el nombre y la contraseña con el
+teclado de texto (sección 13) y una confirmación. Se puede **tocar una de las redes cercanas** para saltarse el nombre.
+**Fondo:** `interna.png` (`fondo`, `pic` = 1). Botones con `style` = flat, `sta` = solid color y `pco2` = `pco`.
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Red | blanco | crop image (`picc` 1) | 30; centrado |
+| `i1` a `i5` | Text | 32 | 84 + 44·n (n = 0 a 4) | 400 | 40 | 0 | (vacío) | texto | tarjeta | 40; `xcen`=0 |
+| `res` | Text | 32 | 308 | 400 | 36 | 0 | (vacío) | texto_suave | tarjeta | 60; `xcen`=0; progreso o resultado de un cambio |
+| `b_conectar` | Button | 32 | 348 | 400 | 48 | 4 | Conectar a otra red | texto | boton | `bco2` = boton_pulsado |
+| `b_volver` | Button | 32 | 404 | 400 | 48 | 4 | Volver | texto | boton | |
+| `h_redes` | Text | 448 | 84 | 320 | 28 | 0 | REDES CERCANAS | texto_suave | tarjeta | 20; `xcen`=0 |
+| `n1` a `n4` | Button | 448 | 116 + 50·n (n = 0 a 3) | 320 | 44 | 0 | (vacío) | texto | boton | `bco2` = boton_pulsado; `txt_maxl` 30 |
+| `b_buscar` | Button | 448 | 320 | 320 | 56 | 4 | Buscar redes | texto | boton | |
+
+**Eventos** (`printh 65 03 CC 00 FF FF FF` al soltar; además `play 1,0,0` en *Touch Press*): `b_conectar` = `01`,
+`b_buscar` = `02`, `n1` = `03`, `n2` = `04`, `n3` = `05`, `n4` = `06`, `b_volver` = `07`, página cargada = `FE`.
+
+**Qué escribe la Pi:**
+
+| Componente | Ejemplo |
+|---|---|
+| `i1` | `Conexión: WiFi «RedEjemplo»`, `Conexión: Cable (Ethernet)` o `Conexión: SIN RED` (en rojo) |
+| `i2` | `IP: 192.168.10.20` |
+| `i3` | `Señal: 99 %` |
+| `i4` | `Internet: SÍ` o `Internet: NO` (en rojo) |
+| `i5` | `ZeroTier: 10.99.99.10` o `ZeroTier: no conectado` |
+| `n1` a `n4` | `RedEjemplo  99%` (las 4 redes de mejor señal; vacío si hay menos) |
+| `res` | `Conectando a «Hospital»...`, `Conectado a «Hospital»`, `Contraseña incorrecta` (en rojo)... |
+
+**Cambiar de red de forma segura:** el equipo prueba la red nueva **sin borrar la actual**. Si la nueva falla
+(contraseña incorrecta, no se encuentra o no tiene internet y la anterior sí), la descarta y **vuelve a la red anterior**.
+Durante el cambio el equipo puede quedar sin red hasta un minuto; la medición, las alarmas y la pantalla siguen funcionando.
+En un equipo nuevo, sin red anterior, una red que conecta pero no sale a internet **se acepta y se avisa**.
+
+## 13. Página `texto` (PP = 09)
+
+Teclado completo para escribir el nombre y la contraseña de una red: letras minúsculas y mayúsculas, números y los
+32 símbolos. Son **40 teclas de caracteres** que cambian de etiqueta según la **capa** (`abc`, `ABC` y `#+=`): la Pi
+reescribe el `txt` de las 40 teclas al cambiar de capa y traduce cada toque al carácter de la capa vigente. Por eso las
+teclas **no llevan el carácter en el evento, sino su posición** (`t_00` a `t_39`). **Fondo:** `interna.png`
+(`fondo`, `pic` = 1). Todos los botones: `style` = flat, `sta` = solid color y `pco2` = `pco`.
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Nombre de la red | blanco | crop image (`picc` 1) | 40; centrado; la Pi lo cambia |
+| `valor` | Text | 32 | 80 | 540 | 52 | 2 | (vacío) | texto | fondo (63423) | 30; `xcen`=0; muestra lo escrito; la contraseña **se ve** salvo que se pulse `Ocultar` |
+| `b_ver` | Button | 580 | 80 | 90 | 52 | 4 | Ocultar | texto | boton | 10; la Pi escribe `Ocultar`/`Ver` (vacío si es el nombre) |
+| `b_borrar` | Button | 678 | 80 | 90 | 52 | 4 | Borrar | texto | boton | |
+| `msg` | Text | 32 | 136 | 736 | 28 | 0 | (vacío) | texto_suave | tarjeta | 80; `xcen`=0; ayuda y errores |
+| `t_00` a `t_09` | Button | 32 + 74·col (col = 0 a 9) | 168 | 68 | 52 | 4 | 1 2 3 4 5 6 7 8 9 0 | texto | boton | 4; fila 1 |
+| `t_10` a `t_19` | Button | 32 + 74·col | 226 | 68 | 52 | 4 | q w e r t y u i o p | texto | boton | fila 2 |
+| `t_20` a `t_29` | Button | 32 + 74·col | 284 | 68 | 52 | 4 | a s d f g h j k l ñ | texto | boton | fila 3 |
+| `t_30` a `t_39` | Button | 32 + 74·col | 342 | 68 | 52 | 4 | z x c v b n m . - _ | texto | boton | fila 4 |
+| `b_mayus` | Button | 32 | 402 | 100 | 52 | 4 | ABC | texto | boton | la Pi escribe `ABC`/`abc` |
+| `b_simbolos` | Button | 138 | 402 | 100 | 52 | 4 | #+= | texto | boton | la Pi escribe `#+=`/`abc` |
+| `b_espacio` | Button | 244 | 402 | 214 | 52 | 4 | espacio | texto | boton | |
+| `b_limpiar` | Button | 464 | 402 | 90 | 52 | 4 | Limpiar | texto | boton | |
+| `b_cancelar` | Button | 560 | 402 | 100 | 52 | 4 | Cancelar | texto | boton | |
+| `b_aceptar` | Button | 666 | 402 | 102 | 52 | 4 | Aceptar | blanco | normal (1128) | `bco2` = 870 (verde oscuro); `pco2` blanco |
+
+Las 40 teclas se hacen **copiando una y cambiando `objname`, `txt`, `x` e `y`**. Los textos iniciales son solo para que
+se vea bien en el editor: la Pi los reescribe al cargar la página.
+
+**Eventos** (`printh 65 09 CC 00 FF FF FF` al soltar):
+
+**Sonido en TODAS las teclas (obligatorio):** *cada* componente táctil de esta página —las 40 teclas `t_00` a `t_39` y
+los botones `b_mayus`, `b_simbolos`, `b_espacio`, `b_borrar`, `b_limpiar`, `b_ver`, `b_cancelar` y `b_aceptar`— lleva
+`play 1,0,0` en **Touch Press**. Es la pantalla la que suena, en el instante del toque y sin esperar a la Pi, para que quien
+escribe sepa que el toque se registró aunque la letra tarde en aparecer (a 9600 baudios puede tardar). Como las teclas se
+hacen copiando una, **ponga el `play 1,0,0` en la primera `t_00` antes de copiarla**: así las 39 restantes lo heredan.
+Después de copiar, revise una por una pulsándolas en *Debug*; una sola tecla muda es un error de la página.
+
+| Teclas | Código `CC` (hexadecimal) |
+|---|---|
+| `t_00` a `t_09` (fila 1) | `00` a `09` |
+| `t_10` a `t_19` (fila 2) | `0A` a `13` |
+| `t_20` a `t_29` (fila 3) | `14` a `1D` |
+| `t_30` a `t_39` (fila 4) | `1E` a `27` |
+| `b_mayus`, `b_simbolos`, `b_espacio` | `30`, `31`, `32` |
+| `b_borrar`, `b_limpiar`, `b_ver` | `33`, `34`, `35` |
+| `b_cancelar`, `b_aceptar` | `36`, `37` |
+| página cargada (*Postinitialize*) | `FE` |
+
+**Qué hace la Pi:** el nombre admite hasta 32 caracteres y la contraseña hasta 63 (8 a 63 para una red con clave; vacía
+significa red abierta si la red no se vio en la búsqueda). La contraseña **se ve mientras se escribe**, para poder
+comprobar que está bien escrita; `Ocultar` la cambia a asteriscos (y `Ver` la muestra de nuevo). Las comillas dobles y la barra invertida se **escapan** al escribirlas en el `txt` (`\"` y `\\`).
+**Por comprobar con la pantalla real:** abra la capa `#+=` y verifique que se ven las teclas `"` y `\`; si salen mal,
+avíseme y las cambio por otra etiqueta.
+
+**Velocidad del puerto serie (recomendado):** esta página repinta 40 teclas al cambiar de capa, y a 9600 baudios tarda
+más de un segundo. En *Program.s* agregue `bauds=115200` junto a `volume=50`. La interfaz **detecta sola** la velocidad (prueba
+115200 y después 9600), así que no hay que cambiar nada más ni queda incomunicada la pantalla.
+
+## 14. Cómo probar lo construido
 
 1. En el editor, botón **Debug**: simula la pantalla sin dispositivo para revisar el diseño.
 2. Guardar y **Compile**: genera el `.tft` (ruta en *File → Open build folder*).
@@ -367,7 +557,6 @@ Las cinco filas de ajuste corresponden, en orden, a las claves `alarma.o2_bajo_p
 4. Conectar la pantalla a la Pi y correr `tools/banco/sonda_nextion.py` (debe responder el modelo).
 5. Probar los eventos con el emulador y con la pantalla real.
 
-## 10. Páginas que faltan (etapas siguientes)
+## 15. Páginas que faltan (etapas siguientes)
 
-config (intervalos, habilitar sensores), red (estado, IP, WiFi), calibracion (guiada), sistema (base de
-datos, reinicios, salud, versión) y reportes (exportar a memoria USB).
+reportes (exportar a memoria USB, desde `sistema`) y calibracion (guiada, con los métodos SPOC y de ajuste de cero).

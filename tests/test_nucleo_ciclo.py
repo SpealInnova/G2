@@ -218,6 +218,71 @@ class PruebasArranqueYCierre(BaseCiclo):
         self.assertEqual(publicados[0]["aviso"], "Sin alarmas")
 
 
+class PruebasOrdenesDeLaInterfaz(BaseCiclo):
+    def alarma_baja_abierta(self) -> None:
+        self.n.iniciar()
+        self.fuente.tensiones[C1] = volts(15.0)
+        self.correr(self.n, 11)
+
+    def comandos(self):
+        return self.a.db.execute("SELECT uuid, origen, tipo, estado, actor, resultado_json FROM comando "
+                                 "ORDER BY id").fetchall()
+
+    def test_acusar_se_registra_como_comando_y_silencia_el_sonido(self) -> None:
+        self.alarma_baja_abierta()
+        self.assertTrue(self.n.estado_pantalla()["sonar"])
+        self.n.procesar_orden({"uuid": "u-1", "tipo": "acusar", "origen": "pantalla", "actor": "pantalla"})
+        self.assertFalse(self.n.estado_pantalla()["sonar"])
+        self.assertTrue(self.salidas.bajo)                                 # el relevo sigue (D-031)
+        (c,) = self.comandos()
+        self.assertEqual((c["uuid"], c["origen"], c["tipo"], c["estado"], c["actor"]),
+                         ("u-1", "pantalla", "acusar", "ok", "pantalla"))
+        self.assertIn('"acusadas": 2', c["resultado_json"])                # la baja y la discrepancia
+
+    def test_la_misma_orden_dos_veces_se_ejecuta_una_sola(self) -> None:
+        self.alarma_baja_abierta()
+        orden = {"uuid": "u-2", "tipo": "acusar", "origen": "pantalla"}
+        self.n.procesar_orden(orden)
+        self.t[0] += 130                                                   # vuelve el sonido
+        self.n.motor.evaluar({self.s1: 15.0, self.s2: 20.9}, self.n.umbrales, self.t[0])
+        self.assertTrue(self.n.estado_pantalla()["sonar"])
+        self.n.procesar_orden(orden)                                       # reenvio: no hace nada
+        self.assertTrue(self.n.estado_pantalla()["sonar"])
+        self.assertEqual(len(self.comandos()), 1)
+
+    def test_una_orden_desconocida_se_rechaza_y_queda_registrada(self) -> None:
+        self.n.iniciar()
+        self.n.procesar_orden({"uuid": "u-3", "tipo": "apagar_todo", "origen": "pantalla"})
+        (c,) = self.comandos()
+        self.assertEqual((c["tipo"], c["estado"]), ("apagar_todo", "rechazado"))
+
+    def test_ordenes_mal_formadas_o_con_origen_raro_no_rompen_nada(self) -> None:
+        self.n.iniciar()
+        self.n.procesar_orden({"tipo": "acusar"})                          # sin uuid
+        self.n.procesar_orden("basura")                                    # ni siquiera es un diccionario
+        self.n.procesar_orden({"uuid": "u-4", "tipo": "acusar", "origen": "internet"})
+        (c,) = self.comandos()
+        self.assertEqual(c["origen"], "local")                             # un origen no valido pasa a "local"
+
+    def test_ejecutar_recibe_ordenes_y_publica_el_estado_de_inmediato(self) -> None:
+        self.alarma_baja_abierta()
+        publicados, pendientes, pasos = [], [[{"uuid": "u-5", "tipo": "acusar", "origen": "pantalla"}]], [0]
+
+        def ordenes():
+            return pendientes.pop(0) if pendientes else []
+
+        def dormir(s: float) -> None:
+            self.t[0] += s
+            pasos[0] += 1
+
+        # intervalo de pantalla 1 s: la publicacion normal solo ocurriria una vez por segundo
+        self.n.ejecutar(lambda: pasos[0] >= 1, periodo_s=0.5, dormir=dormir,
+                        al_publicar=publicados.append, ordenes=ordenes)
+        self.assertEqual(len(publicados), 1)
+        self.assertFalse(publicados[0]["sonar"])                           # ya con el acuse aplicado
+        self.assertTrue(publicados[0]["sensores"][0]["acusada"])
+
+
 class FuenteAdcDePrueba:
     """Doble del ADC: entrega lecturas o lanza errores segun se le pida."""
 

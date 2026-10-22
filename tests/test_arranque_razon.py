@@ -81,7 +81,7 @@ class PruebasMigracion003a004(unittest.TestCase):
                     " VALUES ('viejo#1', 1000, 1, '0.0.0')")
                 self.assertEqual(auditoria.verificar(con), [])
 
-                self.assertEqual(migraciones.migrar(con), 4)           # carpeta completa
+                self.assertEqual(migraciones.migrar(con), 7)           # carpeta completa
 
                 revs = [f[0] for f in con.execute(
                     "SELECT rev FROM auditoria_cadena WHERE tabla = 'arranque' ORDER BY seq")]

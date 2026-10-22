@@ -1277,6 +1277,17 @@ descartadas, consecuencias, fuente.
 - **Observado:** la **primera muestra** tras arrancar el ADC puede ser transitoria (el sensor 2 marcó
   56.6 % en la primera muestra y luego 0.9 %). Se evaluará descartar las primeras lecturas tras el
   arranque o tras reiniciar el chip.
+- **Corrección (2026-10-21, con la prueba real en la Pi):** el valor extremo de una alarma (`valor_pico`) se
+  reescribía en la base cada vez que el mínimo o el máximo se movía una milésima: con los sensores casi en cero
+  una sola alarma llegó a **191 revisiones**, cada una con su eslabón de auditoría y su entrada en la cola de envío
+  (la cola pasó de 1808 registros, 724 de alarmas), con desgaste innecesario de la tarjeta SD. Ahora el extremo
+  se lleva al día en memoria y solo se escribe cuando se mueve al menos **0.5 %** (`PICO_MIN_CAMBIO`), y **siempre**
+  al cerrar la alarma, al deshabilitar su sensor y al apagar el núcleo (el registro final queda exacto). Medido
+  después: en 90 s la cola solo creció con las lecturas (12 registros) y las alarmas abiertas no sumaron
+  revisiones. 4 pruebas nuevas.
+- **Observación:** mientras no exista `g2-uplink`, la cola de envío solo crece (unos 8 registros por minuto con las
+  lecturas, más las alarmas y la auditoría) y por D-014 nada se borra sin confirmación de la plataforma: la base
+  crece sin límite hasta que exista el envío. Con 1 h de pruebas pesa unos 700 KB.
 - **Pendiente:** servicio de systemd con watchdog por progreso (D-012); relevos por GPIO (D-033);
   `g2-ui` (protocolo de la Nextion y emulador); `g2-uplink` y la cola de envío; registro de salud de
   la Pi; flujos de calibración; que `g2ctl` pida los cambios al núcleo en vez de escribir.
@@ -1305,6 +1316,299 @@ descartadas, consecuencias, fuente.
   revisarse con el responsable de seguridad antes de la instalación en campo.
 - **Pendiente:** autorizar el nodo y fijar su IP; comprobar el acceso por SSH desde la IP de ZeroTier;
   elegir una de las opciones de refuerzo de arriba.
+
+---
+
+## D-036 — g2-core como servicio de systemd con watchdog por progreso
+
+- **Fecha:** 2026-10-21
+- **Qué se hizo:** `systemd/g2-core.service` y `scripts/instalar_servicios.sh` (repetible; `--iniciar`, `--quitar`).
+  El servicio es `Type=notify`: avisa "listo" al terminar de arrancar (`src/g2/nucleo/notificacion.py`, sin
+  dependencias) y da un **latido solo después de cada paso completo** del ciclo (lectura, alarmas y base).
+  Con `WatchdogSec=30`, si el ciclo se atasca (ADC o base de datos), el latido se detiene y systemd lo reinicia
+  (watchdog por progreso, D-012).
+- **Decisiones de la unidad:** `Restart=always` **sin límite** de reinicios (una vigilancia detenida es peor que
+  un reinicio repetido; la escalada a reiniciar la Pi o al modo seguro de D-012 queda pendiente porque depende
+  de D-033); `RestartPreventExitStatus=2` (el código 2 es "sin sensores habilitados", un error de configuración);
+  no depende de la red; endurecimiento mínimo (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict` con
+  escritura solo en la carpeta de datos y en `/run/g2`). La validación con `systemd-analyze verify` detectó que
+  `StartLimitIntervalSec` va en `[Unit]` y no en `[Service]`.
+- **Probado en la Pi (2026-10-21):** el servicio arranca y queda habilitado al encender; con el proceso **congelado
+  a propósito** (`SIGSTOP`) systemd lo detectó a los 30 s (`Watchdog timeout`), lo cerró (`ABRT`) y lo reinició
+  en unos 4 s; el arranque nuevo quedó con la razón `SYS_REINICIO_ANORMAL`, se retomaron las 2 alarmas abiertas
+  sin duplicarlas y la cadena de auditoría siguió íntegra; un reinicio ordenado (`systemctl restart`) queda como
+  `SYS_ARRANQUE`. Consumo: unos 24 MB de memoria.
+- **Ojo:** mientras corre, el servicio ocupa el ADC; para usar las herramientas de banco hay que detenerlo
+  (`sudo systemctl stop g2-core`) y volver a iniciarlo. La base de producción (`~/g2/datos/g2.db`) ya contiene
+  datos de estas pruebas (alarmas con el divisor de voltaje); antes de instalar el equipo en campo se recrea.
+
+---
+
+## D-037 — g2-ui: interfaz de la pantalla y su comunicación con el núcleo
+
+- **Fecha:** 2026-10-21
+- **Qué es:** el paquete `src/g2/pantalla/` y su arranque `python3 -m g2.pantalla`, servicio `g2-ui`
+  (`systemd/g2-ui.service`, también `Type=notify` con watchdog por progreso). Primera etapa: página principal
+  completa, navegación a la página de alarmas (solo lectura), Acusar, parpadeo y sonido de alarma.
+  **Falta** el teclado numérico con el PIN para editar los ajustes y las páginas config, red, calibración,
+  sistema y reportes.
+- **Módulos:** `protocolo.py` (códigos de página y control, eventos, órdenes y colores: **única fuente**, usada
+  también por la herramienta de banco `tools/banco/pantalla.py`), `vistas.py` (del estado del núcleo a lo que
+  muestra cada página, funciones puras), `enlace.py` (puerto serie real y una pantalla emulada para pruebas),
+  `datos.py` (lecturas de la base en **solo lectura** y estado de la red) e `interfaz.py` (navegación, pintado
+  solo de lo que cambia, parpadeo, sonido y acuse).
+- **Comunicación con el núcleo (`src/g2/ipc.py`): archivos en `/run/g2`** (memoria, sin desgastar la SD):
+  el núcleo publica `estado.json` cada segundo (de forma atómica) y la interfaz deja las órdenes como archivos en
+  `ordenes/`. **Por qué archivos y no un socket:** son fáciles de inspeccionar, se prueban igual en un PC y en la
+  Pi, no abren puertos y los protegen los permisos del usuario. La interfaz **nunca escribe en la base** (D-005):
+  el núcleo recoge cada orden, la **registra en la tabla `comando`** con su `uuid` (idempotente: reenviarla no la
+  ejecuta dos veces) y la ejecuta.
+- **Comportamientos acordados en D-031 y D-032, ya implementados:** el recuadro del sensor parpadea a 1 Hz
+  (invirtiendo los colores para que el texto se lea en las dos fases) mientras la alarma no se acusa y queda fijo
+  en rojo al acusar; la Pi repite el sonido de alarma cada 3 s mientras el núcleo lo pide (si la interfaz se
+  detiene, el sonido se detiene solo); Acusar acusa los dos sensores y los relevos no cambian.
+- **Si el núcleo se cuelga:** si `estado.json` tiene más de 5 s, la interfaz **no muestra valores viejos como
+  actuales**: los recuadros pasan a `SIN SEÑAL`, los valores a `--.-`, el aviso dice `Núcleo sin respuesta` y el
+  sonido se detiene; cuando el núcleo vuelve, la pantalla se recupera sola.
+- **Probado:** 63 pruebas nuevas con la pantalla emulada (272 en total, también en la Pi) y una prueba de punta a
+  punta en la Pi: la pantalla real respondió la versión del protocolo (1), la interfaz cargó la página principal
+  y un acuse enviado por la vía de las órdenes se ejecutó en menos de 2.5 s y quedó registrado en `comando`.
+- **Detalles del enlace real:** la pantalla es la **NX8048P050_011R**, firmware 293, 123 MB de flash, a 9600 baudios
+  (TX de la pantalla en el pin 10 de la Pi y RX en el pin 8). Una orden de cambio de página responde con el
+  evento de página cargada. A 9600 baudios un repintado completo de la principal tarda cerca de un segundo; se
+  evalúa subir la velocidad (`bauds` en Program.s y en el servicio).
+- **Para oír el sonido de alarma** hay que agregar `nextion/sonidos/alarma.wav` al `.HMI` como **segundo audio**
+  (id 1); sin él la orden `play 0,1,0` no suena.
+- **Pendiente:** el teclado y el PIN (reglas por confirmar: vigencia, intentos y bloqueo), las demás páginas, la
+  confirmación con la pantalla real de los toques y del parpadeo, y el estado de la red que hoy solo mira el enlace
+  (no comprueba internet) y la cola de envío, que se llenará cuando exista `g2-uplink`.
+
+---
+
+## D-038 — PIN de la pantalla y cambio de ajustes con teclado
+
+- **Fecha:** 2026-10-21
+- **Decisiones del usuario:** hay un PIN **de fábrica** (el usuario eligió el valor; **no está en el repositorio**) y otro
+  que asigna la plataforma, que reemplaza al de fábrica cuando existe; el PIN **vale 5 minutos** una vez aceptado;
+  **3 intentos fallidos** bloquean el teclado **60 s**.
+- **Qué protege:** los cambios de ajustes hechos desde la pantalla táctil (hoy los cinco de la página de alarmas;
+  después calibración y red). Ver datos, navegar y **Acusar** no piden PIN.
+- **Dónde se guarda:** tabla `pin_acceso` (migración **005**, esquema 5) con la **huella** PBKDF2-HMAC-SHA256 (100 000
+  iteraciones, sal propia de 16 bytes), nunca el PIN. La tabla **no entra a la cola de envío ni a la cadena de
+  auditoría a propósito**: la huella de un PIN de 4 dígitos se recupera probando los 10 000 valores, así que no debe salir
+  del equipo. Por eso tampoco se usa la tabla `config` (su historial se sincroniza) y el valor **no puede ir en el código ni
+  en el repositorio público**: se aprovisiona en cada equipo por SSH con
+  `python3 -m g2.ctl pin-fijar --tipo fabrica --desde-stdin` (el PIN no se pasa como argumento: quedaría en el historial
+  del shell y en la lista de procesos). Los cambios de PIN quedan como evento `SEG_PIN_CAMBIADO` **sin el valor**.
+- **Quién verifica:** la interfaz (`g2-ui`) compara lo tecleado con la huella leída de la base en solo lectura, de modo
+  que el PIN **nunca viaja** (ni por los archivos de `/run/g2` ni por el registro). Al núcleo solo le avisa el **resultado**
+  (`pin_resultado`: aceptado, fallido o bloqueado), que el núcleo registra como eventos de seguridad
+  (`SEG_PIN_ACEPTADO`, `SEG_PIN_FALLIDO`, `SEG_PIN_BLOQUEADO`) y como comandos auditables.
+- **Cómo se cambia un ajuste:** toque en el ajuste → teclado (pide el PIN si no hay uno vigente) → valor → la interfaz lo
+  valida con las **mismas reglas del catálogo** que el núcleo (rango y relaciones como mínimo < máximo), con mensajes
+  claros → orden `config_fijar` al núcleo → el núcleo la **registra en `comando`**, la valida otra vez, la aplica con
+  origen `pantalla` y su historial (queda ligada a su orden) y rige en el siguiente ciclo, sin reiniciar. Si el núcleo la
+  rechaza, el motivo queda en el comando y el valor vigente no cambia.
+- **Falla cerrada:** si no hay ningún PIN configurado, la pantalla **no permite cambios** y lo dice. Las claves del propio
+  PIN (`pantalla.pin_vigencia_s`, `pantalla.pin_intentos`, `pantalla.pin_bloqueo_s`) solo las cambian la plataforma o
+  `g2ctl`, **nunca la pantalla** (comprobado con una prueba).
+- **Límites conocidos:** (1) los contadores de intentos y el bloqueo viven en memoria: si `g2-ui` se reinicia, se reinician;
+  (2) quien pueda **leer la base** podría recuperar un PIN corto de su huella, y quien tenga acceso al sistema
+  puede además escribir órdenes: el PIN protege contra una persona frente a la pantalla, no contra un acceso al sistema,
+  que se protege con SSH, ZeroTier y los permisos (D-035); (3) la plataforma aún no puede asignar su PIN y la pantalla
+  aún no avisa que el de fábrica sigue activo.
+- **Probado:** 41 pruebas nuevas (317 en total, también en la Raspberry Pi): formato y verificación del PIN, que el PIN no aparece
+  en ningún byte de los archivos de la base ni en la cola, el recorrido completo en la interfaz con la pantalla emulada
+  (PIN correcto, incorrecto, bloqueo y su fin, vigencia de 5 minutos, vencimiento mientras se teclea, valores fuera de rango,
+  mínimo mayor que el máximo, claves enteras, cancelar y sin PIN configurado) y las órdenes del núcleo.
+- **Pendiente:** comando de la plataforma para asignar el PIN; aviso en pantalla de "PIN de fábrica activo"; mostrar en la página
+  de Sistema el estado del PIN; persistir el bloqueo si se decide que debe sobrevivir a un reinicio de la interfaz.
+
+---
+
+## D-039 — Páginas de sistema y configuración, salud de la Pi y plan de las demás páginas
+
+- **Fecha:** 2026-10-21
+- **Decisiones del usuario sobre las páginas que faltaban:** (1) **WiFi:** debe poder conectarse a **cualquier red
+  escribiendo su nombre y contraseña** en la pantalla, con letras mayúsculas y minúsculas, números y caracteres
+  especiales → hace falta una página nueva de **teclado alfanumérico** (`texto`, código `09`); (2) **calibración:**
+  **ambos métodos**, la guía del SPOC del fabricante y el ajuste de cero por software, y los dos quedan registrados;
+  (3) **reportes a USB:** CSV con un archivo de huellas SHA-256; (4) **PIN en todo lo delicado:** la exportación a USB y
+  las acciones de Sistema.
+- **Plan por etapas** (cada una con su especificación del HMI, para que el usuario construya en el editor mientras se
+  implementa el lado de la Pi): **1** `confirmar`, `sistema` y `config` (hecha del lado de la Pi); **2** `reportes`;
+  **3** `calibracion`; **4** `texto` y `red`.
+- **Etapa 1 — páginas** (especificación en las secciones 9 a 11 de `nextion/ESPECIFICACION_HMI.md`):
+  - `confirmar` (PP `08`): pregunta de Sí / No compartida por todas las acciones que interrumpen el servicio.
+  - `sistema` (PP `05`): 8 líneas de información (software, protocolo de la pantalla, tiempo encendido, CPU y RAM,
+    disco, base y cola, estado de los servicios, qué PIN rige; en rojo si hay alarma) y las acciones **reiniciar servicios**,
+    **reiniciar el equipo** y **verificar la auditoría**; todas piden PIN y las dos primeras además confirmación.
+  - `config` (PP `02`): intervalo de guardado, intervalo de la pantalla, diferencia máxima entre sensores y encender o
+    apagar cada sensor (con PIN; apagar pide confirmación y **nunca se permite apagar el último sensor**).
+- **Salud de la Raspberry Pi (`src/g2/nucleo/salud.py`, pendiente desde D-011 y D-013):** cada 10 s se miden la
+  temperatura del procesador, uso del procesador, RAM, disco, voltaje (`throttled`), enlace de red, señal WiFi, tamaño
+  de la base y tiempo encendido. Se **registra una fila de `salud` al arrancar y cada 30 minutos** y, además, cada vez que
+  una causa abre una alarma (con la causa como motivo). Alarmas con retardo de 30 s e histéresis (5 °C, 5 %, 2 % y
+  0.5 GB): `ALM_RPI_TEMP_ALTA`, `ALM_RPI_RAM_ALTA`, `ALM_DISCO_ESPACIO_BAJO`, `ALM_DISCO_ESPACIO_CRITICO` (aviso si
+  queda menos del 20 % o 2 GB; crítico menos del 10 % o 1 GB) y `ALM_RPI_BAJO_VOLTAJE`. Son alarmas **del sistema**:
+  salen en el aviso de la pantalla pero **no suenan ni activan relevos** (D-033). Lo que no se pudo medir queda
+  nulo, nunca un cero inventado. Probado con datos reales de la Pi (46 °C, 36 % de RAM, 7.8 GB libres, `0x0`).
+- **Órdenes nuevas del núcleo** (siempre registradas en `comando`, idempotentes por `uuid`): `sensor_habilitar`,
+  `sistema_accion` y `auditoria_resultado`; migración **006** con los eventos `SYS_REINICIO_PEDIDO`,
+  `SEG_AUDITORIA_VERIFICADA` y `SEG_AUDITORIA_ALTERADA`. Las acciones del sistema salen de una **lista cerrada**
+  (reiniciar servicios y reiniciar equipo): nada de lo que llegue en una orden se ejecuta como comando.
+- **Cómo reinicia el núcleo sin `sudo`:** los servicios corren con `NoNewPrivileges`, que bloquea `sudo`, y es una
+  protección que se quiere conservar. En su lugar, la regla de polkit `systemd/50-g2.rules` (la instala
+  `scripts/instalar_servicios.sh`) permite al usuario `pi` **solo** reiniciar `g2-core.service` y `g2-ui.service` y reiniciar
+  el equipo (no apagarlo ni tocar otras unidades).
+- **Defecto encontrado y corregido en la prueba real:** el comando `systemctl` lo lanza el propio núcleo y vive en su
+  grupo de procesos, así que cuando systemd reinicia al núcleo **mata también al comando antes de que alcance a reiniciar
+  la interfaz**. Ahora se encolan ambos con `--no-block` y el núcleo va **último**; comprobado: cambian los dos PID.
+- **Verificar la auditoría:** la hace la interfaz **en segundo plano** (puede tardar y crece con la base) con su
+  conexión de solo lectura y avisa el resultado al núcleo, que lo deja como evento (`SEG_AUDITORIA_VERIFICADA` o
+  `SEG_AUDITORIA_ALTERADA`, severidad 4). Si no se puede verificar, **nunca se dice que está bien**.
+- **Verificado por el usuario en la pantalla real (2026-10-21):** el PIN de la pantalla funciona: un intento fallido, el
+  PIN aceptado y varios ajustes cambiados desde el teclado quedaron aplicados y registrados con origen `pantalla`
+  (D-038). Los umbrales de alarma quedaron con valores de prueba (mínimo 15 %, máximo 95 %, retardo 15 s, acuse 180 s);
+  **restaurar los valores de fábrica (20 %, 92 %, 10 s, 120 s) antes de usar el equipo.**
+- **Probado:** 374 pruebas (también en la Pi): 57 nuevas de interfaz (sistema, config, confirmar, PIN reutilizado) y 30 de
+  salud y órdenes del núcleo.
+- **Pendiente:** el usuario construye `confirmar`, `sistema` y `config` en el `.HMI`; después las etapas 2, 3 y 4. La
+  página de sistema muestra el botón de reportes, que por ahora dice "próxima etapa".
+
+---
+
+## D-040 — Configuración de la red desde la pantalla y la plataforma
+
+- **Fecha:** 2026-10-21
+- **Requisito del usuario:** (1) poder configurar la red **también desde la plataforma**, estando el equipo conectado por
+  Ethernet o por una red temporal: se ingresan las credenciales, se acepta, el equipo cambia a la red nueva, queda sin red
+  un momento y se reconecta; (2) se necesita el **teclado completo en la pantalla** porque, en una **primera instalación,
+  el equipo no tiene credenciales** y necesita una primera configuración de red.
+- **Prioridad:** la red pasó a ser la etapa siguiente (antes de reportes y calibración), por ser lo primero que necesita un
+  equipo nuevo en campo.
+- **Cambio de red con reversión automática (`src/g2/red/gestor.py`):** usa NetworkManager por medio de `nmcli`. Un equipo
+  que queda sin red por una contraseña mal escrita es inalcanzable, así que **nunca se borra la red que funciona antes de
+  comprobar la nueva**: se anota la red activa y si tenía internet, se crea un perfil **nuevo** y se activa, se comprueba que
+  la red nueva llega a internet **por su propia interfaz** (con `SO_BINDTODEVICE`: si hay un cable, este no debe tapar el
+  fallo del WiFi), y si todo va bien se queda con la nueva (prioridad 10 sobre las anteriores, que siguen guardadas como
+  respaldo; se conservan a lo sumo 4 perfiles creados por G2). Si falla (contraseña incorrecta, red no encontrada, tiempo
+  agotado o sin internet cuando antes sí había) **borra el perfil nuevo, vuelve a la red anterior y dice por qué falló**.
+  **Primer uso:** si antes no había internet (equipo nuevo), una red que conecta pero no sale a internet **se acepta y se
+  avisa**, porque es mejor que ninguna.
+- **Qué redes admite:** WPA/WPA2 personal (contraseña de 8 a 63 caracteres o 64 hexadecimales), redes **abiertas** (contraseña
+  vacía) y redes **ocultas**. **No** admite todavía redes empresariales (802.1X) ni portales cautivos (que piden aceptar una
+  página).
+- **El núcleo no se bloquea:** el cambio puede tardar uno o dos minutos, así que lo ejecuta un **hilo propio**
+  (`src/g2/nucleo/servicio_red.py`) que también mide la red cada 10 s y busca redes cada 30 s; el ciclo del núcleo sigue
+  midiendo, alarmando y dando su latido. El hilo **nunca escribe en la base**: deja el resultado y el núcleo lo registra
+  (comando `ok` o `error` y los eventos `RED_CAMBIO_SOLICITADO`, `RED_CAMBIO_OK`, `RED_CAMBIO_FALLIDO`; migración 007).
+  Órdenes nuevas: `red_configurar` y `red_buscar`; solo se hace un cambio a la vez.
+- **La contraseña no deja rastro (comprobado con pruebas):** se **redacta** (`***`) antes de guardar el comando, que se sincroniza
+  con la plataforma y entra a la cadena de auditoría; los eventos solo llevan el nombre de la red; el archivo de la orden va en
+  `/run/g2` (memoria) con permisos **0600** y el núcleo lo **borra al recogerlo**; nunca sale en el registro de actividad ni
+  en una orden a la pantalla mientras está oculta; no aparece en ningún byte de los archivos de la base. La guarda NetworkManager
+  en su perfil (solo root puede leerlo). Límite conocido: viaja como argumento de `nmcli` unos milisegundos, visible solo
+  para quien ya tenga acceso a la Pi.
+- **Desde la pantalla (primera instalación):** si no hay red, la barra principal dice **"Sin red: toque Red para conectarse"**. La
+  página `red` muestra la conexión (tipo, nombre, IP, señal, internet y ZeroTier), las 4 redes cercanas de mejor señal y el
+  resultado; **tocar una red cercana** salta el nombre y, si es abierta, también la contraseña. **Conectar a otra red**:
+  PIN → nombre → contraseña → confirmación → orden. La página `texto` es un **teclado completo**: 40 teclas de caracteres que
+  cambian por **capas** (`abc`, `ABC` y `#+=`, con los 32 símbolos ASCII, la `ñ` y los números), espacio, borrar, limpiar y **Ocultar /
+  Ver** (la contraseña **se ve** al escribirla; ver D-042). Nombre hasta 32 caracteres y contraseña hasta 63. La pantalla sigue "tonta": la
+  Pi reescribe las etiquetas y traduce cada toque, por eso el evento lleva la **posición** de la tecla y no el carácter.
+- **Desde la plataforma:** se usa **la misma orden** `red_configurar` (con origen `plataforma`) cuando exista `g2-uplink`; el
+  resultado queda en `comando` y se enviará al volver la conexión por la cola de envío. **Pendiente:** el transporte seguro de esa
+  orden (TLS y órdenes firmadas, plan de seguridad D-022): una contraseña de red no puede viajar sin eso; y qué hace la plataforma
+  si el equipo no confirma tras el cambio (la reversión local protege al equipo).
+- **Permisos:** la regla de polkit `systemd/50-g2.rules` se amplió con las acciones de NetworkManager necesarias (buscar redes y
+  crear, modificar y activar perfiles; no apagar el WiFi). **Comprobado en la Pi** desde un proceso sin sesión (el caso del
+  servicio): escaneó las redes y creó y borró un perfil de prueba sin activarlo.
+- **Velocidad del puerto serie:** `g2-ui` ahora **detecta sola** la velocidad (prueba 115200 y luego 9600), porque el teclado de texto
+  repinta 40 teclas al cambiar de capa y a 9600 baudios tarda más de un segundo; se recomienda `bauds=115200` en *Program.s* del
+  `.HMI`. Una pantalla a cualquiera de las dos velocidades funciona.
+- **Probado:** 461 pruebas (también en la Pi): 27 del gestor con un `nmcli` falso (cambio correcto, contraseña incorrecta, red
+  inexistente, sin internet con y sin internet previo, primer uso, cable y WiFi, red abierta y oculta, poda de perfiles, que la contraseña no
+  salga en el registro), 20 del servicio y las órdenes (con que no haya rastro de la contraseña en la base) y 60 de la interfaz
+  (escribir a mano, elegir de la lista, redes abiertas, ver y ocultar, límites de largo, cancelar, progreso y resultado).
+- **Pendiente:** (1) el usuario construye las páginas `red` y `texto` (especificación, secciones 12 y 13); (2) **la prueba real de
+  la reversión en la Pi** (apaga la red de 20 a 60 s: con un cable Ethernet conectado no hay interrupción); (3) comprobar en la
+  pantalla las teclas `"` y `\`, que se escapan en el `txt`; (4) la parte de la plataforma; (5) redes empresariales y portales cautivos.
+
+---
+
+## D-041 — La pantalla se reinicia al sonar con volumen alto
+
+- **Fecha:** 2026-10-21
+- **Qué se vio:** con una alarma sonando (la Pi ordena `play 0,1,0` cada 3 s), el registro de `g2-ui` mostraba que **la pantalla
+  se encendía sola cada 3 segundos** (20 veces en 6 minutos): se reiniciaba cada vez que sonaba. Era grave: en una alarma real
+  la pantalla habría quedado ilegible justo cuando más se necesita.
+- **Cómo se aisló:** (1) al silenciar el sonido (un acuse) los reinicios se detuvieron; (2) con `g2-ui` detenido y la herramienta de
+  banco, `play 1,0,0` (pitido corto) no reiniciaba, pero `play 0,0,0`, `play 0,1,0` y `play 1,1,0` sí (la pantalla emite su secuencia de
+  arranque `00 00 00` y `88`); (3) con `volume=10`, `20`, `40`, `50` y `60` el sonido de alarma **no** reinicia (tres pasadas cada uno),
+  y con **70** sí. **Causa:** el volumen de **70** que se recomendó en la especificación (`volume=70` en *Program.s*) hace que el
+  altavoz consuma más de lo que aguanta la fuente de la pantalla, que se reinicia por caída de tensión. Hay que revisar la fuente de
+  la pantalla (corriente disponible) antes de instalar el equipo.
+- **Corrección de raíz:** el volumen lo **fija la Pi**, no el `.HMI`: `g2-ui` envía `volume=N` al arrancar y **cada vez que la pantalla
+  enciende** (el `.HMI` vuelve a poner el suyo en cada arranque y la Pi lo corrige antes de que suene), con N de la clave
+  `pantalla.volumen` (**50** por omisión; solo la plataforma o `g2ctl` la cambian). La especificación pasa a `volume=50` y avisa que
+  no se suba de 60.
+- **Protección:** si la pantalla se reinicia dentro de los 4 s siguientes a un sonido, la interfaz **baja el volumen 20 puntos** (mínimo 10)
+  y lo registra como error; si ocurre 3 veces en un minuto, **desactiva el sonido de alarma 10 minutos**. La alarma visual (el recuadro
+  rojo y el aviso) y los **relevos no dependen del sonido** y siguen igual.
+- **Comprobado en la pantalla real:** con el sonido sonando cada 3 s, 0 reinicios en 40 s; y tras un **arranque en frío** (`rest`),
+  donde el `.HMI` vuelve a poner su volumen, 0 reinicios en 30 s con la alarma sonando. 12 pruebas nuevas de la interfaz (473 en total,
+  también en la Pi).
+- **Pendiente:** cambiar `volume=70` por `volume=50` en *Program.s* del `.HMI`; medir la corriente real que entrega la fuente de la pantalla
+  con el altavoz sonando; decidir si el volumen se puede ajustar desde la página de configuración.
+
+---
+
+## D-042 — Contraseña visible, sonido en cada tecla y transporte seguro de la contraseña
+
+- **Fecha:** 2026-10-22
+- **Contraseña visible (corrige D-040):** la contraseña de la red **se ve mientras se escribe**; `Ocultar` la cambia a asteriscos y `Ver`
+  la vuelve a mostrar. **Por qué:** una clave de hasta 63 caracteres con mayúsculas, números y símbolos se equivoca con facilidad y,
+  tecleada mal, el equipo prueba la red, falla y vuelve a la anterior: se pierden uno o dos minutos y, en un equipo nuevo sin red, no
+  hay forma de saber qué falló. El riesgo de que alguien la vea por encima del hombro es menor que ese y se controla con `Ocultar`.
+  Mientras está oculta, la clave sigue sin enviarse a la pantalla (prueba incluida). El campo `valor` sigue enmascarado en el registro
+  de órdenes de la interfaz.
+- **Sonido en cada tecla:** la especificación (sección 13) exige `play 1,0,0` en *Touch Press* de **las 40 teclas y de todos los botones**
+  de `texto`, y avisa de ponerlo en `t_00` antes de copiarla. **Por qué en la pantalla y no desde la Pi:** suena en el instante del toque,
+  sin pasar por el puerto serie, de modo que confirma que **el toque se registró** aunque la letra tarde en aparecer (a 9600 baudios
+  repintar el campo puede tardar); si lo ordenara la Pi, un sonido tardío o ausente no distinguiría entre «no se pulsó» y «la Pi
+  está ocupada».
+- **Qué ya protege a la contraseña dentro del equipo (D-040):** redactada antes de guardar el comando, ausente de eventos, auditoría,
+  base y registro; archivo de la orden en memoria (`/run/g2`, 0600) borrado al leerlo; NetworkManager la guarda solo para root.
+  **Límites que quedan:** el cable serie pantalla-Pi está dentro de la caja; la clave viaja unos milisegundos como argumento de
+  `nmcli`; y si está visible, quien mire la pantalla la ve.
+- **Qué falta para que viaje segura desde la plataforma** (la clave sale del navegador de quien administra, pasa por el servidor y llega
+  al equipo; hoy **no existe** ese camino y no debe abrirse sin estos puntos). Ordenados por importancia:
+  1. **TLS con certificado válido y verificado** en todo el trayecto (navegador-servidor y equipo-servidor); nada de `verify=False`
+     (el sistema anterior lo usaba). El equipo **siempre inicia** la conexión (consulta u MQTT): no se abre ningún puerto en la Pi.
+  2. **Autenticación individual del equipo**: un secreto por equipo, guardado con hash en la plataforma (D-022, etapa 3), nunca el
+     token global.
+  3. **Órdenes firmadas por la plataforma** (Ed25519: la plataforma firma, el equipo solo guarda la clave pública, así que robar un
+     equipo no permite firmar órdenes). La firma cubre el identificador del equipo, el `uuid` de la orden, la fecha de emisión, una
+     **caducidad corta** (p. ej. 10 minutos) y los parámetros. El equipo rechaza lo caducado, lo ajeno, lo repetido (el `uuid` ya es
+     idempotente) y lo mal firmado. Sin esto, quien obtenga el canal podría mandar al equipo a una red falsa.
+  4. **Autorización en la plataforma**: solo un usuario con el rol adecuado y sobre sus propios equipos puede ordenar un cambio de red;
+     queda quién, cuándo y desde dónde (el nombre de la red sí se registra; la clave no).
+  5. **La plataforma no debe conservar ni registrar la clave en claro**: sin guardarla en la base (o solo cifrada y borrada al
+     confirmar el equipo), sin que aparezca en los registros de peticiones ni en el cuerpo de los errores, nunca en la URL, formulario
+     con `autocomplete="off"`, y que el resultado que vuelve al equipo no la repita.
+  6. **Cifrado de extremo a extremo del campo de la clave** (recomendado, segunda etapa): el equipo genera un par X25519 al
+     aprovisionarse y registra su clave pública; el navegador o la plataforma cifra la clave de la red con ella (cifrado de sobre con
+     AES-GCM) y solo el equipo puede descifrarla, de modo que ni un proxy que termine el TLS, ni el servidor, ni sus registros la ven en
+     claro. Ya está disponible sin instalar nada: la Pi tiene `cryptography` 43 (X25519, Ed25519, AES-GCM) y Node trae `crypto`.
+  7. **Resultado confiable aunque se corte la red**: el cambio deja al equipo sin conexión unos instantes; el resultado se guarda
+     en `comando` y se envía por la cola de envío al volver (D-040). La plataforma muestra «pendiente» y un plazo; la reversión local
+     protege al equipo si la red nueva falla.
+  8. **Reloj**: la caducidad exige hora correcta; la Pi sincroniza por NTP (comprobado), pero un equipo nuevo sin red puede tener la
+     hora mal, por eso la comprobación de caducidad se acompaña de un contador creciente por equipo.
+- **Recomendación:** etapa A = puntos 1-5 junto con el resto del plan D-022 (el mínimo para abrir el camino); etapa B = punto 6. Hasta
+  entonces la red se cambia **solo desde la pantalla**, que es segura.
+- **Pendiente:** confirmar la etapa A/B con el usuario; el diseño del mensaje firmado; cómo se aprovisionan las claves en la fábrica.
 
 ---
 

@@ -1,0 +1,43 @@
+# g2-ui: interfaz de la pantalla Nextion (D-005, D-029, D-032).
+#
+# Lee el estado que publica g2-core en /run/g2 y lo pinta en la pantalla; deja las ordenes (p. ej. acusar)
+# en /run/g2/ordenes para que las ejecute el nucleo. NUNCA escribe en la base de datos: la abre solo para
+# lectura (por eso necesita acceso a la carpeta de datos: SQLite en modo WAL crea archivos auxiliares).
+#
+#  * Type=notify + WatchdogSec: watchdog por progreso, igual que g2-core (D-012).
+#  * No usa Requires=g2-core: si el nucleo se cae, esta interfaz sigue viva y AVISA en pantalla
+#    ("Nucleo sin respuesta") en vez de apagarse junto con el.
+#  * Necesita el puerto serie /dev/serial0 (grupo dialout). El puerto es de uso exclusivo: para las
+#    herramientas de banco (tools/banco/pantalla.py) hay que detener este servicio antes.
+[Unit]
+Description=G2 - interfaz de la pantalla Nextion
+Documentation=https://github.com/SpealInnova/G2
+After=g2-core.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=pi
+Group=pi
+SupplementaryGroups=dialout
+WorkingDirectory=/home/pi/g2/datos
+Environment=PYTHONPATH=/home/pi/g2/dev/src
+Environment=PYTHONUNBUFFERED=1
+Environment=G2_BD=/home/pi/g2/datos/g2.db
+Environment=G2_RUN=/run/g2
+RuntimeDirectory=g2
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 -m g2.pantalla
+Restart=always
+RestartSec=2
+WatchdogSec=20
+TimeoutStartSec=30
+TimeoutStopSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/pi/g2/datos
+
+[Install]
+WantedBy=multi-user.target

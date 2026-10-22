@@ -27,6 +27,7 @@ from typing import Iterator
 
 from g2.almacenamiento import base, migraciones
 from g2.configuracion import catalogo
+from g2.seguridad import pin as seguridad_pin
 from g2.configuracion.catalogo import ErrorConfig
 from g2.tiempo import RelojSistema
 
@@ -464,6 +465,48 @@ class Almacen:
                 (estado, self.reloj.ahora_ms(),
                  json.dumps(resultado, ensure_ascii=False) if resultado is not None else None,
                  comando_id))
+
+    # ------------------------------------------------------------------ PIN de la pantalla (D-038)
+    def pin_fijar(self, tipo: str, pin: str, *, origen: str, actor: str | None = None) -> None:
+        """Guarda la HUELLA de un PIN (nunca el PIN) y deja el evento ``SEG_PIN_CAMBIADO`` sin su valor.
+
+        ``tipo``: ``fabrica`` (se aprovisiona al instalar) o ``plataforma`` (lo asigna la plataforma; cuando
+        existe, el de fabrica deja de valer).
+
+        Raises:
+            ErrorPin: el PIN no son entre 4 y 8 digitos.
+        """
+        if tipo not in ("fabrica", "plataforma"):
+            raise ErrorAlmacen(f"tipo de PIN desconocido: {tipo!r}")
+        sal, huella, iteraciones = seguridad_pin.nueva_huella(pin)
+        with self._transaccion():
+            self.db.execute(
+                "INSERT INTO pin_acceso (tipo, sal, huella, iteraciones, actualizado_ms, actor) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (tipo) DO UPDATE SET sal = excluded.sal, "
+                "huella = excluded.huella, iteraciones = excluded.iteraciones, "
+                "actualizado_ms = excluded.actualizado_ms, actor = excluded.actor",
+                (tipo, sal, huella, iteraciones, self.reloj.ahora_ms(), actor))
+            self._evento_sin_tx("SEG_PIN_CAMBIADO", f"{origen}:{actor or '-'}",
+                                mensaje=f"Se cambio el PIN de {tipo}")
+
+    def pin_activo(self) -> dict | None:
+        """El PIN que hoy rige: el de la plataforma si existe y, si no, el de fabrica; ``None`` si no hay
+        ninguno (la pantalla entonces NO permite cambios: falla cerrada)."""
+        fila = self.db.execute(
+            "SELECT tipo, sal, huella, iteraciones FROM pin_acceso "
+            "ORDER BY CASE tipo WHEN 'plataforma' THEN 0 ELSE 1 END LIMIT 1").fetchone()
+        return dict(fila) if fila else None
+
+    def pin_verificar(self, pin: str) -> str | None:
+        """Tipo del PIN vigente si ``pin`` es correcto; ``None`` si no lo es o no hay ningun PIN."""
+        activo = self.pin_activo()
+        if activo and seguridad_pin.verificar(pin, activo["sal"], activo["huella"], activo["iteraciones"]):
+            return activo["tipo"]
+        return None
+
+    def pin_tipos(self) -> list[str]:
+        """Tipos de PIN que existen (sin revelar nada mas)."""
+        return [f["tipo"] for f in self.db.execute("SELECT tipo FROM pin_acceso ORDER BY tipo")]
 
     # ------------------------------------------------------------------ estado de la base
     def estado(self) -> dict:

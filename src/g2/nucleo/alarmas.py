@@ -41,6 +41,12 @@ ALM_INVALIDO = "ALM_SENSOR_INVALIDO"
 ALM_DISCREPANCIA = "ALM_SENSORES_DISCREPANTES"
 
 MAX_LARGO_AVISO = 60               # ``txt_maxl`` del componente ``aviso`` de la pantalla
+# El valor extremo de una alarma (``valor_pico``) solo se reescribe en la base cuando se mueve al menos esto
+# (en % de O2, o en puntos de diferencia para la discrepancia), y siempre al cerrar la alarma o al apagar el
+# nucleo. Sin este umbral, el ruido del sensor (milesimas de %) hacia una revision, un eslabon de auditoria
+# y una entrada de la cola de envio por cada nuevo minimo: 191 revisiones en una sola alarma (prueba del
+# 2026-10-21), con desgaste de la tarjeta SD.
+PICO_MIN_CAMBIO = 0.5
 ORIGEN = "g2-core"
 
 
@@ -75,10 +81,12 @@ class Condicion:
         self.desde_s = 0.0
         self.alarma_id: int | None = None
         self.acusada = False
-        self.pico: float | None = None
+        self.pico: float | None = None            # el extremo real, al dia en memoria
+        self.pico_guardado: float | None = None   # el ultimo extremo escrito en la base
 
     def reiniciar(self) -> None:
-        self.estado, self.alarma_id, self.acusada, self.pico = INACTIVA, None, False, None
+        self.estado, self.alarma_id, self.acusada = INACTIVA, None, False
+        self.pico = self.pico_guardado = None
 
     def actualizar(self, entra: bool, sale: bool, retardo_s: float, ahora_s: float) -> str | None:
         """Avanza el estado. ``entra``: el valor esta en la zona de alarma; ``sale``: ya salio de
@@ -155,8 +163,19 @@ class MotorAlarmas:
                                  (alarma_id,)).fetchone()
         cond.estado, cond.alarma_id = ACTIVA, alarma_id
         cond.acusada = fila["estado"] == "acusada"
-        cond.pico = fila["valor_pico"]
+        cond.pico = cond.pico_guardado = fila["valor_pico"]
         return 1
+
+    def guardar_picos(self) -> None:
+        """Escribe en la base los extremos que aun no se han guardado (cierre ordenado del nucleo)."""
+        for cond in self._todas():
+            if cond.estado == ACTIVA:
+                self._guardar_pico(cond)
+
+    def _guardar_pico(self, cond: Condicion) -> None:
+        if cond.alarma_id is not None and cond.pico is not None and cond.pico != cond.pico_guardado:
+            self.a.actualizar_pico(cond.alarma_id, cond.pico)
+            cond.pico_guardado = cond.pico
 
     # ------------------------------------------------------------------ evaluacion
     def evaluar(self, valores: dict[int, float | None], umbrales: Umbrales, ahora_s: float) -> list[str]:
@@ -214,6 +233,7 @@ class MotorAlarmas:
             if cond is None:
                 continue
             if cond.estado == ACTIVA and cond.alarma_id is not None:
+                self._guardar_pico(cond)
                 self.a.cerrar_alarma(cond.alarma_id)
                 cambios.append(f"cierra {cond.codigo} de {self._nombre(sensor_id)} (sensor deshabilitado)")
             cond.reiniciar()
@@ -224,7 +244,8 @@ class MotorAlarmas:
                  cambios: list[str]) -> None:
         accion = cond.actualizar(entra, sale, retardo_s, ahora_s)
         if accion == "activar":
-            cond.pico, cond.acusada = valor, False
+            cond.pico = cond.pico_guardado = valor
+            cond.acusada = False
             cond.alarma_id = self.a.abrir_alarma(cond.codigo, sensor_id=cond.sensor_id,
                                                  umbral=umbral, valor=valor, mensaje=mensaje)
             cambios.append(f"abre {cond.codigo}: {mensaje}")
@@ -232,6 +253,7 @@ class MotorAlarmas:
                 self.a.registrar_evento("SEN_FALLA", ORIGEN, sensor_id=cond.sensor_id, mensaje=mensaje)
         elif accion == "cerrar":
             if cond.alarma_id is not None:
+                self._guardar_pico(cond)                 # el extremo final queda exacto en el registro
                 self.a.cerrar_alarma(cond.alarma_id)
             cambios.append(f"cierra {cond.codigo}"
                            + (f" de {self._nombre(cond.sensor_id)}" if cond.sensor_id else ""))
@@ -241,10 +263,9 @@ class MotorAlarmas:
             cond.reiniciar()
         elif cond.estado == ACTIVA and valor is not None and modo_pico and cond.alarma_id is not None:
             extremo = min if modo_pico == "min" else max
-            nuevo = valor if cond.pico is None else extremo(cond.pico, valor)
-            if nuevo != cond.pico:
-                cond.pico = nuevo
-                self.a.actualizar_pico(cond.alarma_id, nuevo)
+            cond.pico = valor if cond.pico is None else extremo(cond.pico, valor)
+            if cond.pico_guardado is None or abs(cond.pico - cond.pico_guardado) >= PICO_MIN_CAMBIO:
+                self._guardar_pico(cond)
 
     # ------------------------------------------------------------------ acuse y sonido
     def acusar(self, actor: str, ahora_s: float, umbrales: Umbrales) -> int:
