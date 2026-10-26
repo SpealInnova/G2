@@ -19,7 +19,7 @@ CLAVES_ALARMAS = ("alarma.o2_bajo_pct", "alarma.o2_alto_pct", "alarma.o2_retardo
                   "alarma.o2_histeresis_pct", "alarma.acuse_silencio_s")
 CLAVES_PIN = ("pantalla.pin_vigencia_s", "pantalla.pin_intentos", "pantalla.pin_bloqueo_s")
 CLAVES_GENERALES = ("muestreo.intervalo_guardado_s", "muestreo.intervalo_pantalla_s", "alarma.discrepancia_pct",
-                    "pantalla.volumen")
+                    "pantalla.volumen", "pantalla.grafica_espera_s")
 
 
 class DatosPantalla:

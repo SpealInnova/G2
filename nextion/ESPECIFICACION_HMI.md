@@ -39,6 +39,7 @@ analizador: `65 PP CC 00 FF FF FF` (bytes en hexadecimal), donde `PP` es el **c�
 | 07 | reportes | | | |
 | 08 | confirmar | | | |
 | 09 | texto | | | |
+| 0A | grafica | | | |
 
 - **Cómo se escribe en el editor:** en el evento *Touch Release* de cada botón, **la primera línea**
   es `printh 65 PP CC 00 FF FF FF` con los códigos de la tabla de esa página (por ejemplo
@@ -110,6 +111,8 @@ más largo de cada caja cabe (`100.0` en `o2_*`, `CALIBRANDO` en `est_*`, `COLA 
 | boton           | 59197  | botón en reposo                      |
 | boton_pulsado   | 48730  | botón pulsado                        |
 | blanco          | 65535  | texto sobre barra y estados          |
+| sensor1         | 6969   | línea y valor del sensor 1 en la gráfica (azul) |
+| sensor2         | 58306  | línea y valor del sensor 2 en la gráfica (naranja) |
 
 El estado nunca se indica **solo con color**: siempre va escrito (NORMAL, ALTA, BAJA...).
 
@@ -461,10 +464,10 @@ teclado de texto (sección 13) y una confirmación. Se puede **tocar una de las 
 |---|---|---|---|---|---|---|---|---|---|---|
 | `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Red | blanco | crop image (`picc` 1) | 30; centrado |
 | `i1` a `i5` | Text | 32 | 84 + 44·n (n = 0 a 4) | 400 | 40 | 0 | (vacío) | texto | tarjeta | 40; `xcen`=0 |
+| `h_redes` | Text | 448 | 84 | 320 | 28 | 0 | REDES CERCANAS | texto_suave | tarjeta | 20; `xcen`=0 |
 | `res` | Text | 32 | 308 | 400 | 36 | 0 | (vacío) | texto_suave | tarjeta | 60; `xcen`=0; progreso o resultado de un cambio |
 | `b_conectar` | Button | 32 | 348 | 400 | 48 | 4 | Conectar a otra red | texto | boton | `bco2` = boton_pulsado |
 | `b_volver` | Button | 32 | 404 | 400 | 48 | 4 | Volver | texto | boton | |
-| `h_redes` | Text | 448 | 84 | 320 | 28 | 0 | REDES CERCANAS | texto_suave | tarjeta | 20; `xcen`=0 |
 | `n1` a `n4` | Button | 448 | 116 + 50·n (n = 0 a 3) | 320 | 44 | 0 | (vacío) | texto | boton | `bco2` = boton_pulsado; `txt_maxl` 30 |
 | `b_buscar` | Button | 448 | 320 | 320 | 56 | 4 | Buscar redes | texto | boton | |
 
@@ -547,7 +550,68 @@ avíseme y las cambio por otra etiqueta.
 más de un segundo. En *Program.s* agregue `bauds=115200` junto a `volume=50`. La interfaz **detecta sola** la velocidad (prueba
 115200 y después 9600), así que no hay que cambiar nada más ni queda incomunicada la pantalla.
 
-## 14. Cómo probar lo construido
+## 15. Página `grafica` (PP = 0A)
+
+Gráfica en tiempo de las dos señales de oxígeno. **La Pi la abre sola** cuando la pantalla `principal` lleva 10 s sin tocarse
+(clave `pantalla.grafica_espera_s`; 0 la desactiva) y **un toque en cualquier parte la cierra**. Si salta una alarma sin acusar o el
+núcleo deja de responder, la Pi vuelve a `principal` sola para que se vea el aviso. **Fondo:** `interna.png` (`fondo`, `pic` = 1).
+Los textos llevan `sta` = solid color y `bco` = tarjeta (65535), salvo `titulo` (crop image, `picc` = 1).
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Oxígeno en el tiempo | blanco | 30; centrado |
+| `s0` | **Waveform** | 72 | 84 | 700 | 290 | | | | ver abajo |
+| `y_max` | Text | 8 | 84 | 58 | 28 | 0 | 24 | texto_suave | 10; `xcen`=2 (derecha); marca de arriba del eje |
+| `y_med` | Text | 8 | 215 | 58 | 28 | 0 | 21 | texto_suave | 10; `xcen`=2; marca del medio |
+| `y_min` | Text | 8 | 346 | 58 | 28 | 0 | 18 | texto_suave | 10; `xcen`=2; marca de abajo |
+| `x_ini` | Text | 72 | 376 | 160 | 24 | 0 | -12 min | texto_suave | 10; `xcen`=0; lo que cubre la gráfica (la Pi lo escribe) |
+| `x_fin` | Text | 612 | 376 | 160 | 24 | 0 | ahora | texto_suave | 10; `xcen`=2; fijo |
+| `v1` | Text | 72 | 404 | 330 | 36 | 1 | S1  20.9 %  NORMAL | sensor1 (6969) | 30; `xcen`=0; la Pi cambia texto y color |
+| `v2` | Text | 420 | 404 | 330 | 36 | 1 | S2  20.9 %  NORMAL | sensor2 (58306) | 30; `xcen`=0 |
+| `msg` | Text | 72 | 442 | 700 | 22 | 0 | Toque la pantalla para volver | texto_suave | 40; centrado; fijo |
+| `salir` | **Hotspot** | 0 | 0 | 800 | 480 | | | | **el último que se crea** (queda encima de todo); un toque en cualquier parte |
+
+**Componente `s0` (Waveform):**
+
+| Atributo | Valor |
+|---|---|
+| `ch` (canales) | **4** |
+| `bco` | tarjeta (65535) |
+| `gdc` (color de la rejilla) | 59197 |
+| `gdw` (ancho de la celda) | 100 |
+| `gdh` (alto de la celda) | 145 (así hay 3 líneas horizontales, alineadas con `y_max`, `y_med` e `y_min`) |
+| `pco0` (canal 0, sensor 1) | 6969 (azul) |
+| `pco1` (canal 1, sensor 2) | 58306 (naranja) |
+| `pco2` (canal 2, límite bajo de alarma) | 51427 (rojo) |
+| `pco3` (canal 3, límite alto de alarma) | 51427 (rojo) |
+| `dis` (escala) | 100 |
+| `dir` (dirección) | de izquierda a derecha (**por comprobar** con la pantalla real: una historia corta debe quedar pegada a la izquierda y, al llenarse la gráfica, desplazarse hacia la izquierda; si sale al revés, cambie `dir`) |
+
+El tamaño importa: **700 píxeles de ancho = 700 puntos por canal**, y la Pi manda **una muestra por segundo** (la gráfica cubre unos 12 minutos).
+Los valores de cada punto van de 0 a 255: el **0 es «sin dato»** (la línea baja al borde inferior) y la Pi ajusta sola el eje vertical
+(`y_max`, `y_med` e `y_min` dicen su escala). Los dos canales de límite solo se dibujan si el límite cae dentro del eje.
+
+**Eventos** (no lleva ningún `printh` en los textos ni en `s0`; solo el hotspot):
+
+| Componente | Evento | Código |
+|---|---|---|
+| `salir` | *Touch Press* | `play 1,0,0` |
+| `salir` | *Touch Release* | `printh 65 0A 01 00 FF FF FF` |
+| Página `grafica` | *Postinitialize* | `printh 65 0A FE 00 FF FF FF` |
+
+**Qué hace la Pi:** (1) al arrancar y cada vez que la pantalla enciende le ordena `sendxy=1`, para que la pantalla avise de **cualquier**
+toque (no solo de los botones) y así saber que alguien la está usando; no hay que poner nada en el `.HMI`. (2) Toma una muestra por segundo
+**siempre**, con la gráfica abierta o no, así al abrirla ya hay historia. (3) Al cargarse la página la dibuja entera con `addt` (una orden
+`addt s0.id,CANAL,N` y, cuando la pantalla responde `FE FF FF FF`, los N bytes; la pantalla confirma con `FD FF FF FF`); mientras tanto no
+manda otras órdenes. Si la pantalla no responde al `addt`, usa `add` punto por punto (más lento: unos 20 s a 9600 baudios, 1,7 s a 115200).
+(4) Con la gráfica abierta agrega un punto por canal cada segundo (`add s0.id,CANAL,VALOR`) y la redibuja entera solo si cambia el eje.
+(5) Si el `.tft` no trae esta página, la pantalla responde «página inexistente»: la Pi lo registra una vez y no vuelve a intentarlo
+hasta que la pantalla se reinicie.
+
+**Se recomienda 115200 baudios** (`bauds=115200` en *Program.s*): dibujar la gráfica entera con `addt` son unos 2,1 KB (1,4 KB sin los límites): ~2 s a
+9600 y 0,2 s a 115200.
+
+## 16. Cómo probar lo construido
 
 1. En el editor, botón **Debug**: simula la pantalla sin dispositivo para revisar el diseño.
 2. Guardar y **Compile**: genera el `.tft` (ruta en *File → Open build folder*).
@@ -557,6 +621,6 @@ más de un segundo. En *Program.s* agregue `bauds=115200` junto a `volume=50`. L
 4. Conectar la pantalla a la Pi y correr `tools/banco/sonda_nextion.py` (debe responder el modelo).
 5. Probar los eventos con el emulador y con la pantalla real.
 
-## 15. Páginas que faltan (etapas siguientes)
+## 17. Páginas que faltan (etapas siguientes)
 
 reportes (exportar a memoria USB, desde `sistema`) y calibracion (guiada, con los métodos SPOC y de ajuste de cero).

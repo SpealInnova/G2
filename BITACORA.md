@@ -272,3 +272,6 @@ decisión están en `MEMORIA_TECNICA.md`.
 - D-042: la contraseña de la red ahora se ve al escribirla (botón Ocultar/Ver); especificación: `play 1,0,0` obligatorio en las 40 teclas
   y en todos los botones de `texto`; documentados los requisitos para que la clave viaje segura desde la plataforma (TLS verificado,
   órdenes firmadas con caducidad, autorización, sin rastro en la plataforma y cifrado de extremo a extremo). 473 pruebas.
+- D-043: gráfica en tiempo de las dos señales (Waveform de 4 canales): se abre sola tras 10 s sin tocar `principal` y un toque la cierra;
+  vuelve a `principal` si salta una alarma sin acusar. Toda la lógica está en la Pi (historial, eje automático, `addt`/`add`, `sendxy=1`).
+  Especificación de la página en la sección 15 del HMI. 523 pruebas. Falta construir la página y probarla en la pantalla real.

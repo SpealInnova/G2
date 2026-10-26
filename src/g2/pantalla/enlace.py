@@ -117,6 +117,7 @@ class EnlaceEmulado(_EnlaceBase):
     def __init__(self) -> None:
         super().__init__()
         self.enviadas: list[str] = []
+        self.crudas: list[bytes] = []                    # bloques de bytes sin terminador (datos de un ``addt``)
         self._entrada = b""
 
     def _leer_bytes(self) -> bytes:
@@ -125,6 +126,9 @@ class EnlaceEmulado(_EnlaceBase):
 
     def enviar(self, orden: str) -> None:
         self.enviadas.append(orden)
+
+    def enviar_crudo(self, datos: bytes) -> None:
+        self.crudas.append(bytes(datos))
 
     def cerrar(self) -> None:
         pass
@@ -144,6 +148,16 @@ class EnlaceEmulado(_EnlaceBase):
 
     def encendida(self) -> None:
         self.inyectar(bytes([0x88]))
+
+    def tocar_en(self, x: int, y: int, pulsado: bool = True) -> None:
+        """Simula un toque en el punto (x, y) (lo que informa la pantalla con ``sendxy=1``)."""
+        self.inyectar(bytes([0x67]) + x.to_bytes(2, "big") + y.to_bytes(2, "big") + bytes([1 if pulsado else 0]))
+
+    def datos_listos(self) -> None:
+        self.inyectar(bytes([0xFE]))
+
+    def datos_recibidos(self) -> None:
+        self.inyectar(bytes([0xFD]))
 
     def responder_numero(self, valor: int) -> None:
         self.inyectar(bytes([0x71]) + int(valor).to_bytes(4, "little", signed=True))

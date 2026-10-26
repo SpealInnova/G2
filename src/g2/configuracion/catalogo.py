@@ -78,6 +78,11 @@ _LISTA = [
        "Volumen del altavoz de la pantalla (0 a 100). Con 70 la pantalla se reinicia al sonar: la fuente no alcanza.",
        "%", 0, 100, editable_por=frozenset({"plataforma", "local"})),
 
+    # --- Grafica en tiempo de la pantalla (D-043) ------------------------------------------------------
+    _c("pantalla.grafica_espera_s", "entero", 10,
+       "Segundos sin tocar la pantalla principal para que aparezca la grafica de los dos sensores (0 = nunca).",
+       "s", 0, 3600, editable_por=frozenset({"plataforma", "local"})),
+
     # --- PIN de la pantalla (D-038): no se pueden cambiar desde la propia pantalla -----------------
     _c("pantalla.pin_vigencia_s", "entero", 300,
        "Tiempo que vale el PIN una vez aceptado, antes de pedirlo otra vez.", "s", 10, 3600,

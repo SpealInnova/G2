@@ -57,9 +57,18 @@ publicados (no se edita a mano).
 
 <!-- NOVEDADES:INICIO -->
 
+### 2026-10-26
+
+- **Gráfica en tiempo de las dos señales (D-043) y pantalla Nextion v0.4.0**
+  - Gráfica de oxígeno contra tiempo con el componente Waveform de 4 canales (sensor 1, sensor 2 y los dos límites de alarma): se abre sola tras 10 s sin tocar la pantalla principal y un toque la cierra. Cubre unos 12 minutos con una…
+  - La Pi manda: ordena sendxy=1 para saber de cualquier toque, dibuja con addt (con respaldo a add si la pantalla no responde) y vuelve sola a la principal si salta una alarma sin acusar o el núcleo deja de responder. Clave nueva pa…
+  - Protecciones: si el .tft no trae la página o la pantalla rechaza sus órdenes, la gráfica se desactiva con un solo error en el registro; tras ordenar volver no se siguen mandando puntos.
+  - Corrección de fondo: mientras llega el aviso de la página nueva ya no se pinta la anterior (la pantalla rechazaba esas órdenes al cambiar de página).
+  - Página grafica construida en el .HMI (versión 0.4.0 con su manifiesto de huellas) y especificada en la sección 15; probada en la pantalla real. 529 pruebas, también en la Pi.
+
 ### 2026-10-22
 
-- **Pantalla Nextion v0.3.0 y servicios g2-ui y g2-core: PIN, red, sistema y configuración**
+- **Pantalla Nextion v0.3.0 y servicios g2-ui y g2-core: PIN, red, sistema y configuración** (`5a4bff5`)
   - Interfaz g2-ui (src/g2/pantalla): la pantalla es "tonta" y la Pi manda; páginas principal, alarmas, teclado (PIN y valores), confirmar, sistema, configuración, red y teclado de texto completo con capas abc, ABC y símbolos. La con…
   - PIN de acceso (D-038): se guarda solo su huella PBKDF2, vale 5 minutos y se bloquea 60 s tras 3 fallos; todas las acciones de cambio lo piden. El valor de fábrica no está en el repositorio.
   - Servicios systemd con vigilancia por progreso (g2-core y g2-ui), regla polkit para reiniciar servicios y gestionar la red sin sudo, e instalador scripts/instalar_servicios.sh; comunicación por archivos en /run/g2 con permisos 060…

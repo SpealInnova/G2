@@ -23,6 +23,10 @@ Esta clase hace todo lo demas:
     el teclado de texto completo (o tocando una red cercana). Todo pide PIN y confirmacion; el cambio lo hace el
     nucleo con reversion automatica si la red nueva falla, y la contrasena nunca se registra.
 
+  * **Grafica en tiempo** (D-043): tras ``pantalla.grafica_espera_s`` (10 s) sin tocar la pantalla, y solo desde ``principal``, abre la
+    pagina ``grafica`` con las dos senales; un toque la cierra. Si salta una alarma sin acusar o el nucleo deja de responder, vuelve
+    sola a ``principal`` para que se vea el aviso. Toda esta logica es de la Pi: la pantalla solo dibuja lo que se le manda.
+
 Pendiente (siguientes etapas): las paginas reportes y calibracion.
 """
 
@@ -36,12 +40,13 @@ from typing import Callable, Protocol
 
 from g2.configuracion import catalogo
 from g2.ipc import ClienteNucleo
+from g2.pantalla import grafica
 from g2.pantalla import protocolo as P
 from g2.pantalla import teclado as tec
 from g2.pantalla import texto as txt
 from g2.pantalla import vistas
-from g2.pantalla.protocolo import (CodigoResultado, Evento, PaginaCargada, PantallaEncendida,
-                                   RespuestaNumero, Toque)
+from g2.pantalla.protocolo import (CodigoResultado, DatosRecibidos, Evento, ListoParaDatos, PaginaCargada,
+                                   PantallaEncendida, RespuestaNumero, TocarPantalla, Toque)
 from g2.red.gestor import ErrorRed, validar_credenciales
 from g2.seguridad import pin as seguridad_pin
 
@@ -57,11 +62,16 @@ VENTANA_REINICIOS_S = 60.0               # reinicios por sonido que se cuentan j
 REINICIOS_PARA_CALLAR = 3                # a este numero de reinicios se desactiva el sonido
 SONIDO_CALLADO_S = 600.0                 # por cuanto tiempo (la alarma visual y los relevos siguen igual)
 GRACIA_SONIDO_S = 4.0                    # un reinicio tan pronto despues de un `play` se atribuye al sonido
+ESPERA_BLOQUE_S = 4.0                    # lo que se espera la respuesta de la pantalla a un `addt` antes de usar `add`
+ESPERA_CAMBIO_GRAFICA_S = 3.0            # tras abrir o cerrar la grafica por su cuenta, no se vuelve a pedir antes de esto
+RECHAZOS_PARA_DESACTIVAR_GRAFICA = 3     # ordenes de la grafica rechazadas por la pantalla antes de desactivarla
+ESPERA_CARGA_S = 2.0                     # tras ordenar una pagina, lo que se espera su aviso de carga sin pintar la anterior
 _SIN_VER = object()                       # marca: todavia no se ha visto el estado del cambio de red
 
 
 class Enlace(Protocol):
     def enviar(self, orden: str) -> None: ...
+    def enviar_crudo(self, datos: bytes) -> None: ...
     def eventos(self) -> list[Evento]: ...
 
 
@@ -141,12 +151,30 @@ class Interfaz:
         self._resultado: tuple[str, bool, float, str] | None = None   # (texto, es_error, hasta cuando, en que pagina)
         self._auditoria_en_curso = False
         self._auditoria_resultado: tuple[bool, int] | None = None
+        # ---- grafica en tiempo (D-043) ----
+        self._hist = grafica.HistorialGrafica()
+        self._t_muestra = float("-inf")
+        self._ultimo_toque = self._reloj()                       # el ultimo toque en cualquier punto de la pantalla
+        self._t_cambio = float("-inf")                           # cuando la Pi abrio o cerro la grafica por su cuenta
+        self._cambio_pedido = ""
+        self._grafica_disponible = True                          # False si el .tft no trae la pagina ``grafica``
+        self._rechazos_grafica = 0                               # ordenes de la grafica que la pantalla rechazo (desde que se abrio)
+        self._cerrando_grafica = False                           # ya se ordeno volver a la principal: no se dibuja mas
+        self._t_pagina_pedida = float("-inf")                    # cuando se ordeno la ultima pagina (hasta que cargue, no se pinta la vieja)
+        self._grafica_dibujada = 0                               # muestras que ya se le mandaron a la pantalla
+        self._grafica_marca: tuple | None = None                 # (eje, limites) con que se dibujo: si cambian, se redibuja todo
+        self._con_bloques = True                                 # redibujar con addt; si no responde, con add
+        self._bloques: deque[tuple[int, bytes]] = deque()
+        self._espera_datos: str | None = None                    # "listo" o "fin" mientras un addt recibe sus bytes
+        self._t_espera = 0.0
+        self._diferidas: list[str] = []                          # ordenes que esperan a que termine el addt
 
     # ------------------------------------------------------------------ arranque
     def iniciar(self) -> None:
         """Fija el volumen y lleva la pantalla a la pagina principal; el resto lo hace el evento de pagina cargada."""
         self._fijar_volumen()
         self._tx(P.orden_pagina("principal"))
+        self._tx(P.ORDEN_INFORMAR_TOQUES)
 
     def _fijar_volumen(self) -> None:
         """Pone el volumen de la pantalla. Lo hace la Pi (no el .HMI) porque con un volumen alto el altavoz consume mas
@@ -175,6 +203,7 @@ class Interfaz:
         for evento in self.enlace.eventos():
             self.atender(evento)
         ahora = self._reloj()
+        self._vigilar_transferencia(ahora)
         if ahora - self._t_refresco >= self.REFRESCO_S:
             self._t_refresco = ahora
             self._refrescar(ahora)
@@ -191,16 +220,26 @@ class Interfaz:
             self._soltar_texto()
             self._confirmacion = None
             self._cache.clear()
+            self._terminar_transferencia(enviar=False)       # la pantalla se reinicio: lo que esperaba ya no existe
+            self._grafica_disponible, self._ultimo_toque = True, ahora      # puede haber traido un .tft nuevo
             self._tx(P.orden_pagina("principal"))
+            self._tx(P.ORDEN_INFORMAR_TOQUES)
         elif isinstance(evento, PaginaCargada):
             REGISTRO.info("pagina cargada: %s", evento.pagina)
             self.pagina = evento.pagina
+            self._t_pagina_pedida = float("-inf")
             if evento.pagina != "teclado":
                 self._soltar_teclado()                       # se salio del teclado por otra via
             if evento.pagina != "texto":
                 self._soltar_texto()                         # y lo que se escribia (puede ser una contrasena) se descarta
             if evento.pagina != "confirmar":
                 self._confirmacion = None
+            if evento.pagina == "grafica":
+                self._grafica_marca = None                   # al abrirla se dibuja todo: la pantalla la trae vacia
+                self._rechazos_grafica = 0
+                self._cerrando_grafica = False
+            else:
+                self._terminar_transferencia()
             self._cache.clear()                              # la pantalla repinta sus valores iniciales al cargar
             self._t_refresco = self._t_datos = float("-inf")     # se repinta, con datos recien leidos, en esta vuelta
             if not self._proto_pedido:
@@ -215,8 +254,19 @@ class Interfaz:
                 else:
                     REGISTRO.error("la pantalla trae el protocolo %d y esta interfaz espera el %d: "
                                    "cargue el .tft que corresponde", evento.valor, P.VERSION_PROTOCOLO)
+        elif isinstance(evento, TocarPantalla):
+            self._ultimo_toque = self._reloj()
+        elif isinstance(evento, ListoParaDatos):
+            self._datos_listos()
+        elif isinstance(evento, DatosRecibidos):
+            self._datos_recibidos()
         elif isinstance(evento, CodigoResultado):
-            if evento.codigo != 0x01:
+            if (evento.codigo == 0x03 and self._cambio_pedido == "grafica"
+                    and self._reloj() - self._t_cambio < ESPERA_CAMBIO_GRAFICA_S):
+                self._grafica_disponible = False
+                REGISTRO.error("la pantalla no tiene la pagina 'grafica': la grafica queda desactivada hasta que se "
+                               "cargue un .tft que la incluya")
+            elif evento.codigo != 0x01 and not self._rechazo_de_la_grafica(evento.descripcion):
                 REGISTRO.warning("la pantalla rechazo una orden: %s (ultimas enviadas: %s)", evento.descripcion,
                                  " | ".join(self._ultimas_ordenes))
         elif isinstance(evento, Toque):
@@ -228,6 +278,14 @@ class Interfaz:
         """Envia una orden a la pantalla y se acuerda de las ultimas, para poder decir cual rechazo la pantalla (su
         respuesta de error no dice a cual se refiere). El campo del teclado de texto NO se guarda: puede llevar una
         contrasena visible."""
+        if self._espera_datos is not None:                  # un addt esta recibiendo bytes: nada debe mezclarse con ellos
+            self._diferidas.append(orden)
+            return
+        self._tx_ahora(orden)
+
+    def _tx_ahora(self, orden: str) -> None:
+        if orden.startswith("page "):
+            self._t_pagina_pedida = self._reloj()
         self._ultimas_ordenes.append("<campo de texto>" if "texto.valor" in orden else orden)
         self.enlace.enviar(orden)
 
@@ -243,9 +301,14 @@ class Interfaz:
 
     def _toque(self, toque: Toque) -> None:
         REGISTRO.info("toque: %s.%s", toque.pagina, toque.control)
+        self._ultimo_toque = self._reloj()
         pagina, control = toque.pagina, toque.control
         if pagina == "principal":
             self._toque_principal(control)
+        elif pagina == "grafica":
+            if control == "salir":
+                self._cerrando_grafica = True
+                self._tx(P.orden_pagina("principal"))
         elif pagina == "alarmas":
             if control == "b_volver":
                 self._tx(P.orden_pagina("principal"))
@@ -625,6 +688,7 @@ class Interfaz:
     def _refrescar(self, ahora: float) -> None:
         estado, edad = self.cliente.leer_estado()
         responde = estado is not None and edad <= self.max_edad_s
+        self._muestrear(ahora, estado if responde else None)
         if ahora - self._t_fase >= self.MEDIO_PARPADEO_S:
             self._fase, self._t_fase = not self._fase, ahora
         if ahora - self._t_datos >= self.DATOS_S:
@@ -666,12 +730,133 @@ class Interfaz:
             vista = vistas.vista_confirmar(self._confirmacion[0], self._confirmacion[1])
         elif self.pagina == "teclado":
             vista = self._vista_teclado(ahora)
-        if vista is not None:
+        elif self.pagina == "grafica":
+            vista = vistas.vista_grafica(estado, nucleo_responde=responde, marcas=self._hist.marcas(),
+                                         ventana=grafica.formato_ventana(self._hist.puntos * grafica.PERIODO_S))
+        if vista is not None and ahora - self._t_pagina_pedida >= ESPERA_CARGA_S:
+            # mientras llega el aviso de la pagina nueva, la pantalla ya no tiene los componentes de la vieja: pintarlos se rechazaria
             self._enviar_cambios(vista, escapar=self.pagina == "texto")
+        self._decidir_grafica(ahora, estado if responde else None)
+        self._atender_grafica(ahora)
         if (responde and estado.get("sonar") and ahora - self._t_sonido >= self.repetir_sonido_s
                 and ahora >= self._sonido_callado_hasta):
             self._t_sonido = self._t_play = ahora
             self._tx(P.ORDEN_SONIDO_ALARMA)       # la repite la Pi: si se detiene, deja de sonar
+
+    # ------------------------------------------------------------------ grafica en tiempo (D-043)
+    def _muestrear(self, ahora: float, estado: dict | None) -> None:
+        """Una muestra por segundo de cada sensor, siempre (no solo con la grafica abierta): al abrirla ya hay historia."""
+        if ahora - self._t_muestra < grafica.PERIODO_S:
+            return
+        self._t_muestra = ahora
+        valores: list[float | None] = [None, None]
+        if estado is not None:
+            for i, s in enumerate(estado["sensores"][:2]):
+                if s.get("estado") not in ("SIN SEÑAL", "APAGADO"):
+                    valores[i] = s.get("o2")
+        self._hist.agregar(valores)
+
+    def _decidir_grafica(self, ahora: float, estado: dict | None) -> None:
+        """Abre la grafica tras un rato sin tocar la pantalla (solo desde ``principal`` y sin alarmas por acusar) y la cierra
+        si salta una alarma sin acusar o el nucleo deja de responder: el aviso rojo no puede quedar tapado."""
+        sin_acusar = bool(estado.get("parpadeo")) if estado is not None else False
+        repetido = ahora - self._t_cambio < ESPERA_CAMBIO_GRAFICA_S          # acaba de pedirse lo mismo: espera a la pantalla
+        if self.pagina == "principal":
+            espera = float(self._config.get("pantalla.grafica_espera_s", 0.0))
+            if (not repetido and espera > 0 and self._grafica_disponible and estado is not None and not sin_acusar
+                    and ahora - self._ultimo_toque >= espera):
+                REGISTRO.info("grafica: %d s sin tocar la pantalla", espera)
+                self._t_cambio, self._cambio_pedido = ahora, "grafica"
+                self._tx(P.orden_pagina("grafica"))
+        elif (self.pagina == "grafica" and (estado is None or sin_acusar)
+              and not (repetido and self._cambio_pedido == "principal")):          # volver por una alarma no espera nada
+            REGISTRO.info("grafica: vuelve a la principal (%s)",
+                          "el nucleo no responde" if estado is None else "hay una alarma sin acusar")
+            self._t_cambio, self._cambio_pedido, self._ultimo_toque = ahora, "principal", ahora
+            self._cerrando_grafica = True
+            self._tx(P.orden_pagina("principal"))
+
+    def _atender_grafica(self, ahora: float) -> None:
+        """Con la grafica abierta: la dibuja entera (al abrirla o al cambiar el eje o los limites) o le agrega los puntos nuevos."""
+        if self.pagina != "grafica" or self._espera_datos is not None or self._cerrando_grafica:
+            return
+        cambio_eje = self._hist.ajustar_escala(ahora)
+        limites = (float(self._config.get("alarma.o2_bajo_pct", 0.0)), float(self._config.get("alarma.o2_alto_pct", 100.0)))
+        marca = (self._hist.bajo, self._hist.alto, limites)
+        pendientes = self._hist.total - self._grafica_dibujada
+        if cambio_eje or marca != self._grafica_marca or pendientes > self._hist.puntos:
+            self._grafica_marca, self._grafica_dibujada = marca, self._hist.total
+            self._tx(self._hist.orden_limpiar())
+            if self._con_bloques:
+                self._bloques = deque(self._hist.bloques_completos(limites))
+                self._siguiente_bloque()
+            else:
+                for orden in self._hist.ordenes_completas(limites):
+                    self._tx(orden)
+        elif pendientes > 0:
+            for orden in self._hist.ordenes_nuevas(pendientes, limites):
+                self._tx(orden)
+            self._grafica_dibujada = self._hist.total
+
+    def _rechazo_de_la_grafica(self, descripcion: str) -> bool:
+        """True si la pantalla rechazo una orden de la grafica (por ejemplo, el Waveform no se llama ``s0``): se cuenta, y a la
+        tercera se desactiva la grafica y se vuelve a la principal, en vez de repetir el error dos veces por segundo."""
+        if self.pagina != "grafica" or not any(o.startswith(("add s0.id", "addt s0.id", "cle s0.id"))
+                                              for o in self._ultimas_ordenes):
+            return False
+        if not self._grafica_disponible or self._cerrando_grafica:     # lo que aun llega de ordenes ya canceladas no cuenta
+            return True
+        self._rechazos_grafica += 1
+        if self._rechazos_grafica == 1:
+            REGISTRO.warning("la pantalla rechazo una orden de la grafica: %s (ultimas enviadas: %s)", descripcion,
+                             " | ".join(self._ultimas_ordenes))
+        if self._rechazos_grafica >= RECHAZOS_PARA_DESACTIVAR_GRAFICA:
+            REGISTRO.error("la pantalla rechaza las ordenes de la grafica (¿el componente Waveform se llama 's0'?): la grafica "
+                           "queda desactivada hasta que la pantalla se reinicie")
+            self._grafica_disponible, self._cerrando_grafica = False, True
+            self._terminar_transferencia()
+            self._t_cambio, self._cambio_pedido, self._ultimo_toque = self._reloj(), "principal", self._reloj()
+            self._tx(P.orden_pagina("principal"))
+        return True
+
+    def _siguiente_bloque(self) -> None:
+        """Pide a la pantalla recibir el proximo canal con ``addt``; los bytes salen cuando responde que esta lista."""
+        if not self._bloques:
+            self._terminar_transferencia()
+            return
+        canal, datos = self._bloques[0]
+        self._tx_ahora(self._hist.orden_bloque(canal, len(datos)))
+        self._espera_datos, self._t_espera = "listo", self._reloj()
+
+    def _datos_listos(self) -> None:
+        if self._espera_datos != "listo" or not self._bloques:
+            return
+        self.enlace.enviar_crudo(self._bloques[0][1])
+        self._espera_datos, self._t_espera = "fin", self._reloj()
+
+    def _datos_recibidos(self) -> None:
+        if self._espera_datos != "fin":
+            return
+        self._bloques.popleft()
+        self._espera_datos = None
+        self._siguiente_bloque()
+
+    def _terminar_transferencia(self, enviar: bool = True) -> None:
+        """Cierra la transferencia (o la abandona) y envia lo que quedo esperando."""
+        self._bloques.clear()
+        self._espera_datos = None
+        pendientes, self._diferidas = self._diferidas, []
+        if enviar:
+            for orden in pendientes:
+                self._tx_ahora(orden)
+
+    def _vigilar_transferencia(self, ahora: float) -> None:
+        """Si la pantalla no responde al ``addt``, se deja de usarlo y la grafica se dibuja con ``add`` (mas lento pero seguro)."""
+        if self._espera_datos is not None and ahora - self._t_espera > ESPERA_BLOQUE_S:
+            REGISTRO.warning("la pantalla no respondio al addt (%s): la grafica se dibuja con 'add'", self._espera_datos)
+            self._con_bloques = False
+            self._terminar_transferencia()
+            self._grafica_marca = None
 
     def _leer_red(self, estado: dict | None) -> None:
         """Toma del estado del nucleo la red, las redes cercanas y el resultado del ultimo cambio. El resultado solo se

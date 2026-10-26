@@ -30,6 +30,7 @@ class DatosFalsos:
         self.auditoria = (True, 0)
         self.sensores_activos = [True, True]
         self.volumen = 50.0
+        self.grafica_espera = 0.0                             # desactivada salvo en las pruebas de la grafica
         sal, huella, iteraciones = seguridad_pin.nueva_huella(PIN_DE_PRUEBA, iteraciones=10_000)
         self.pin = {"tipo": "fabrica", "sal": sal, "huella": huella, "iteraciones": iteraciones}
 
@@ -38,7 +39,8 @@ class DatosFalsos:
 
     def config_general(self):
         return {"muestreo.intervalo_guardado_s": 15.0, "muestreo.intervalo_pantalla_s": 1.0,
-                "alarma.discrepancia_pct": 0.5, "pantalla.volumen": self.volumen}
+                "alarma.discrepancia_pct": 0.5, "pantalla.volumen": self.volumen,
+                "pantalla.grafica_espera_s": self.grafica_espera}
 
     def datos_del_equipo(self):
         return {"equipo.nombre": "", "equipo.id": ""}
@@ -64,8 +66,10 @@ class DatosFalsos:
 
 
 def estado(s1=("20.9", "NORMAL", False), s2=("20.9", "NORMAL", False), aviso="Sin alarmas", sonar=False) -> dict:
-    return {"sensores": [{"id": 1, "texto_o2": s1[0], "estado": s1[1], "acusada": s1[2]},
-                         {"id": 2, "texto_o2": s2[0], "estado": s2[1], "acusada": s2[2]}],
+    def o2(texto):
+        return None if texto == "--.-" else float(texto)
+    return {"sensores": [{"id": 1, "o2": o2(s1[0]), "texto_o2": s1[0], "estado": s1[1], "acusada": s1[2]},
+                         {"id": 2, "o2": o2(s2[0]), "texto_o2": s2[0], "estado": s2[1], "acusada": s2[2]}],
             "aviso": aviso, "sonar": sonar, "parpadeo": False}
 
 
@@ -116,7 +120,7 @@ class BaseInterfaz(unittest.TestCase):
 class PruebasArranqueYPintado(BaseInterfaz):
     def test_al_iniciar_lleva_la_pantalla_a_principal(self) -> None:
         self.ui.iniciar()
-        self.assertEqual(self.enlace.enviadas, ["volume=50", "page principal"])
+        self.assertEqual(self.enlace.enviadas, ["volume=50", "page principal", "sendxy=1"])
 
     def test_al_cargar_la_pagina_la_pinta_entera(self) -> None:
         self.arrancar_en_principal()
@@ -156,7 +160,7 @@ class PruebasArranqueYPintado(BaseInterfaz):
         self.enlace.enviadas.clear()
         self.enlace.encendida()
         self.ui.paso()
-        self.assertEqual(self.enlace.enviadas, ["volume=50", "page principal"])
+        self.assertEqual(self.enlace.enviadas, ["volume=50", "page principal", "sendxy=1"])
         self.cargar("principal")
         self.assertIn('principal.o2_1.txt="20.9"', self.enlace.enviadas)      # se repinta todo
 
@@ -1361,6 +1365,304 @@ class PruebasVolumenYProteccion(BaseEtapa1):
         sonidos = self.enlace.enviadas.count("play 0,1,0")
         self.avanzar(8.0)
         self.assertGreater(self.enlace.enviadas.count("play 0,1,0"), sonidos)                  # sigue intentando sonar
+
+class PruebasCambioDePagina(BaseInterfaz):
+    def test_mientras_llega_la_pagina_nueva_no_se_pinta_la_vieja(self) -> None:
+        self.arrancar_en_principal()
+        self.enlace.tocar("principal", "b_alarmas")
+        self.ui.paso()
+        self.assertEqual(self.enlace.enviadas[-1], "page alarmas")
+        self.enlace.enviadas.clear()
+        self.publicar(estado(s1=("21.4", "NORMAL", False)))                   # el valor cambia mientras la pantalla cambia de pagina
+        self.avanzar(1.0)
+        self.assertEqual([o for o in self.enlace.enviadas if o.startswith("principal.")], [])
+        self.cargar("alarmas")
+        self.avanzar(0.5)
+        self.assertTrue([o for o in self.enlace.enviadas if o.startswith("alarmas.")])      # y la nueva si se pinta
+
+    def test_si_la_pagina_nunca_carga_se_vuelve_a_pintar_pasado_un_tiempo(self) -> None:
+        self.arrancar_en_principal()
+        self.enlace.tocar("principal", "b_alarmas")
+        self.ui.paso()
+        self.enlace.enviadas.clear()
+        self.publicar(estado(s1=("21.4", "NORMAL", False)))
+        self.avanzar(4.0)
+        self.assertIn('principal.o2_1.txt="21.4"', self.enlace.enviadas)
+
+
+class PruebasGrafica(BaseInterfaz):
+    """La grafica de las dos senales aparece tras 10 s sin tocar la pantalla principal y un toque la cierra (D-043)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.datos.grafica_espera = 10.0
+
+    def pedidas(self) -> int:
+        return self.enlace.enviadas.count("page grafica")
+
+    def completar_transferencias(self) -> None:
+        """Hace de pantalla: responde "lista" y "recibido" a cada addt que la Pi espera."""
+        for _ in range(8):
+            self.enlace.datos_listos()
+            self.ui.paso()
+            self.enlace.datos_recibidos()
+            self.ui.paso()
+
+    def llegar_a_la_grafica(self, est: dict | None = None) -> None:
+        """Arranca en la principal, deja pasar el tiempo hasta que la Pi pide la grafica y la pantalla la carga."""
+        if est is not None:
+            self.publicar(est)
+        self.arrancar_en_principal()
+        self.avanzar(11.0)
+        self.assertEqual(self.pedidas(), 1)
+        self.cargar("grafica")
+        self.avanzar(0.6)
+
+    def abrir(self, est: dict | None = None) -> None:
+        self.llegar_a_la_grafica(est)
+        self.completar_transferencias()
+
+    @staticmethod
+    def con_alarma_sin_acusar() -> dict:
+        e = estado(s1=("15.0", "BAJA", False), aviso="S1 BAJO 15.0 %", sonar=True)
+        e["parpadeo"] = True
+        return e
+
+    # ---- cuando se abre ----
+    def test_al_iniciar_y_al_encender_pide_los_toques_de_toda_la_pantalla(self) -> None:
+        self.ui.iniciar()
+        self.assertIn("sendxy=1", self.enlace.enviadas)
+        self.enlace.enviadas.clear()
+        self.enlace.encendida()
+        self.ui.paso()
+        self.assertIn("sendxy=1", self.enlace.enviadas)
+
+    def test_desactivada_si_la_espera_es_cero(self) -> None:
+        self.datos.grafica_espera = 0.0
+        self.arrancar_en_principal()
+        self.avanzar(60.0)
+        self.assertEqual(self.pedidas(), 0)
+
+    def test_se_abre_tras_10_segundos_sin_tocar(self) -> None:
+        self.arrancar_en_principal()
+        self.avanzar(9.0)
+        self.assertEqual(self.pedidas(), 0)
+        self.avanzar(3.0)
+        self.assertEqual(self.pedidas(), 1)
+
+    def test_un_toque_en_cualquier_punto_reinicia_la_cuenta(self) -> None:
+        self.arrancar_en_principal()
+        self.avanzar(8.0)
+        self.enlace.tocar_en(100, 100)                                   # en una zona sin botones
+        self.avanzar(8.0)
+        self.assertEqual(self.pedidas(), 0)
+        self.avanzar(3.0)
+        self.assertEqual(self.pedidas(), 1)
+
+    def test_el_toque_de_un_boton_tambien_reinicia_la_cuenta(self) -> None:
+        self.arrancar_en_principal()
+        self.avanzar(8.0)
+        self.enlace.tocar("principal", "b_acuse")
+        self.avanzar(8.0)
+        self.assertEqual(self.pedidas(), 0)
+
+    def test_no_se_abre_con_una_alarma_sin_acusar(self) -> None:
+        self.publicar(self.con_alarma_sin_acusar())
+        self.arrancar_en_principal()
+        self.avanzar(30.0)
+        self.assertEqual(self.pedidas(), 0)
+
+    def test_con_la_alarma_acusada_si_se_abre(self) -> None:
+        self.publicar(estado(s1=("15.0", "BAJA", True), aviso="S1 BAJO 15.0 %"))
+        self.arrancar_en_principal()
+        self.avanzar(12.0)
+        self.assertEqual(self.pedidas(), 1)
+
+    def test_solo_se_abre_desde_la_principal(self) -> None:
+        self.arrancar_en_principal()
+        self.cargar("alarmas")
+        self.avanzar(30.0)
+        self.assertEqual(self.pedidas(), 0)
+
+    def test_no_se_abre_si_el_nucleo_no_responde(self) -> None:
+        self.arrancar_en_principal()
+        self.publicando = False
+        self.avanzar(30.0)
+        self.assertEqual(self.pedidas(), 0)
+
+    def test_la_pi_sigue_tomando_muestras_aunque_la_grafica_este_cerrada(self) -> None:
+        self.datos.grafica_espera = 0.0
+        self.arrancar_en_principal()
+        self.avanzar(20.0)
+        self.assertGreaterEqual(self.ui._hist.cantidad(), 14)
+
+    # ---- como se cierra ----
+    def test_un_toque_en_la_grafica_vuelve_a_la_principal(self) -> None:
+        self.abrir()
+        self.enlace.enviadas.clear()
+        self.enlace.tocar("grafica", "salir")
+        self.ui.paso()
+        self.assertEqual(self.enlace.enviadas[-1], "page principal")
+
+    def test_despues_de_cerrarla_no_vuelve_a_abrirse_hasta_pasar_otros_10_segundos(self) -> None:
+        self.abrir()
+        self.enlace.tocar("grafica", "salir")
+        self.ui.paso()
+        self.cargar("principal")
+        self.avanzar(8.0)
+        self.assertEqual(self.pedidas(), 1)
+        self.avanzar(3.0)
+        self.assertEqual(self.pedidas(), 2)
+
+    def test_si_salta_una_alarma_con_la_grafica_abierta_vuelve_a_la_principal(self) -> None:
+        self.abrir()
+        self.enlace.enviadas.clear()
+        self.publicar(self.con_alarma_sin_acusar())
+        self.avanzar(1.5)
+        self.assertIn("page principal", self.enlace.enviadas)
+        self.cargar("principal")
+        self.enlace.enviadas.clear()
+        self.avanzar(30.0)
+        self.assertEqual(self.pedidas(), 0)                                # y no se reabre mientras siga sin acusar
+
+    def test_si_el_nucleo_deja_de_responder_con_la_grafica_abierta_vuelve_a_la_principal(self) -> None:
+        self.abrir()
+        self.enlace.enviadas.clear()
+        self.publicando = False
+        self.avanzar(8.0)
+        self.assertIn("page principal", self.enlace.enviadas)
+
+    def test_si_la_pantalla_no_tiene_la_pagina_se_desactiva_sin_repetir_el_error(self) -> None:
+        self.arrancar_en_principal()
+        self.avanzar(11.0)
+        self.assertEqual(self.pedidas(), 1)
+        with self.assertLogs("g2.pantalla", level="ERROR"):
+            self.enlace.inyectar(bytes([0x03]))                              # "pagina inexistente"
+            self.ui.paso()
+        self.avanzar(60.0)
+        self.assertEqual(self.pedidas(), 1)
+        self.enlace.encendida()                                              # un .tft nuevo: se vuelve a intentar
+        self.ui.paso()
+        self.cargar("principal")
+        self.avanzar(11.0)
+        self.assertEqual(self.pedidas(), 2)
+
+    # ---- como se dibuja ----
+    def test_al_abrirla_se_dibuja_todo_con_addt(self) -> None:
+        self.llegar_a_la_grafica()
+        n = self.ui._hist.cantidad()
+        self.assertIn("cle s0.id,255", self.enlace.enviadas)
+        self.assertIn(f"addt s0.id,0,{n}", self.enlace.enviadas)
+        self.assertEqual(self.enlace.crudas, [])                             # los bytes esperan a que la pantalla este lista
+        self.enlace.datos_listos()
+        self.ui.paso()
+        self.assertEqual(len(self.enlace.crudas[0]), n)
+        self.enlace.datos_recibidos()
+        self.ui.paso()
+        self.assertIn(f"addt s0.id,1,{n}", self.enlace.enviadas)             # sigue con el segundo canal
+
+    def test_se_dibujan_los_valores_actuales_y_las_marcas_del_eje(self) -> None:
+        self.abrir()
+        for esperado in ('grafica.v1.txt="S1  20.9 %  NORMAL"', f"grafica.v1.pco={P.COLOR['sensor1']}",
+                         'grafica.y_max.txt="24"', 'grafica.y_min.txt="17"'):
+            self.assertIn(esperado, self.enlace.enviadas)
+
+    def test_el_limite_bajo_de_alarma_se_dibuja_como_tercer_canal_y_el_alto_no_(self) -> None:
+        self.abrir()
+        canales = [o for o in self.enlace.enviadas if o.startswith("addt s0.id,")]
+        self.assertEqual([c.split(",")[1] for c in canales], ["0", "1", "2"])   # el limite alto (92 %) cae fuera del eje
+
+    def test_un_sensor_sin_senal_se_dibuja_en_el_nivel_cero(self) -> None:
+        self.abrir(estado(s2=("--.-", "SIN SEÑAL", False)))
+        self.assertNotIn(0, self.enlace.crudas[0])
+        self.assertEqual(set(self.enlace.crudas[1]), {0})
+
+    def test_con_la_grafica_abierta_cada_segundo_agrega_un_punto_a_cada_canal(self) -> None:
+        self.abrir()
+        self.enlace.enviadas.clear()
+        self.avanzar(5.0)
+        sensor1 = [o for o in self.enlace.enviadas if o.startswith("add s0.id,0,")]
+        sensor2 = [o for o in self.enlace.enviadas if o.startswith("add s0.id,1,")]
+        self.assertGreaterEqual(len(sensor1), 3)
+        self.assertEqual(len(sensor1), len(sensor2))
+        self.assertEqual(self.enlace.crudas[0:0], [])
+        self.assertFalse([o for o in self.enlace.enviadas if o.startswith(("cle", "addt"))])   # sin redibujar todo
+
+    def test_si_un_valor_sale_del_eje_se_redibuja_todo(self) -> None:
+        self.abrir()
+        self.enlace.enviadas.clear()
+        self.publicar(estado(s1=("40.0", "NORMAL", False)))
+        self.avanzar(3.0)
+        self.assertIn("cle s0.id,255", self.enlace.enviadas)
+        self.assertTrue([o for o in self.enlace.enviadas if o.startswith("addt")])
+
+    def test_lo_que_llega_durante_la_transferencia_espera_a_que_termine(self) -> None:
+        self.llegar_a_la_grafica()
+        antes = len(self.enlace.enviadas)
+        self.publicar(estado(s1=("21.4", "NORMAL", False)))
+        self.avanzar(2.0)
+        self.assertEqual([o for o in self.enlace.enviadas[antes:] if "grafica.v1" in o], [])    # nada se mezcla con los bytes
+        self.completar_transferencias()
+        self.assertIn('grafica.v1.txt="S1  21.4 %  NORMAL"', self.enlace.enviadas[antes:])
+
+    def test_si_la_pantalla_no_responde_al_addt_se_dibuja_con_add(self) -> None:
+        self.llegar_a_la_grafica()
+        with self.assertLogs("g2.pantalla", level="WARNING"):
+            self.avanzar(6.0)
+        self.assertFalse(self.ui._con_bloques)
+        self.assertTrue([o for o in self.enlace.enviadas if o.startswith("add s0.id,0,")])
+        self.assertEqual(self.enlace.crudas, [])
+
+    def test_un_reinicio_de_la_pantalla_abandona_la_transferencia(self) -> None:
+        self.llegar_a_la_grafica()
+        self.enlace.encendida()
+        self.ui.paso()
+        self.assertIsNone(self.ui._espera_datos)
+        self.enlace.enviadas.clear()
+        self.cargar("principal")
+        self.assertIn('principal.o2_1.txt="20.9"', self.enlace.enviadas)       # sigue funcionando con normalidad
+
+    def test_si_la_pantalla_rechaza_las_ordenes_de_la_grafica_se_desactiva_y_vuelve_a_la_principal(self) -> None:
+        self.abrir()
+        self.avanzar(2.0)                                                       # ya se estan mandando puntos con add
+        self.assertTrue([o for o in self.enlace.enviadas if o.startswith("add s0.id,")])
+        with self.assertLogs("g2.pantalla", level="WARNING") as registro:
+            for _ in range(5):
+                self.enlace.inyectar(bytes([0x1A]))                              # "variable o atributo invalido"
+                self.ui.paso()
+        self.assertEqual(self.enlace.enviadas[-1], "page principal")
+        self.assertEqual(len(registro.output), 2)                               # un aviso y un error: no una linea por rechazo
+        self.cargar("principal")
+        self.avanzar(30.0)
+        self.assertEqual(self.pedidas(), 1)                                     # y no vuelve a abrirse
+
+    def test_tras_ordenar_volver_no_se_siguen_mandando_puntos_a_la_pagina_que_ya_no_los_tiene(self) -> None:
+        self.abrir()
+        self.avanzar(2.0)
+        self.enlace.tocar("grafica", "salir")
+        self.ui.paso()
+        indice = len(self.enlace.enviadas)
+        self.avanzar(3.0)                                                       # la pagina principal aun no termina de cargar
+        self.assertEqual([o for o in self.enlace.enviadas[indice:] if o.startswith(("add ", "cle ", "addt "))], [])
+
+    def test_la_cuenta_de_rechazos_no_desactiva_la_grafica_por_ordenes_enviadas_al_volver(self) -> None:
+        self.abrir()
+        self.avanzar(2.0)
+        self.enlace.tocar("grafica", "salir")
+        self.ui.paso()
+        for _ in range(5):                                                      # rechazos de puntos que ya estaban en camino
+            self.enlace.inyectar(bytes([0x1A]))
+            self.ui.paso()
+        self.cargar("principal")
+        self.avanzar(11.0)
+        self.assertEqual(self.pedidas(), 2)                                     # la grafica sigue disponible
+
+    def test_un_rechazo_ajeno_a_la_grafica_se_sigue_registrando_como_siempre(self) -> None:
+        self.arrancar_en_principal()
+        with self.assertLogs("g2.pantalla", level="WARNING") as registro:
+            self.enlace.inyectar(bytes([0x1A]))
+            self.ui.paso()
+        self.assertIn("la pantalla rechazo una orden:", registro.output[0])
 
 
 

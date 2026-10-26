@@ -1612,6 +1612,44 @@ descartadas, consecuencias, fuente.
 
 ---
 
+## D-043 — Gráfica en tiempo de las dos señales
+
+- **Fecha:** 2026-10-26
+- **Qué se pidió:** una gráfica de amplitud contra tiempo de las dos señales que aparezca sola cuando la pantalla lleva 10 s sin tocarse y
+  que un toque sobre ella devuelva a la pantalla principal.
+- **Diagnóstico (factible, bajo riesgo):** el componente *Waveform* de Nextion trae 4 canales con valores de 0 a 255 y ancho de 700
+  píxeles = 700 puntos por canal. Cálculo del enlace serie (10 bits por byte): un punto nuevo (`add`, 2 canales) son ~28 bytes (29 ms a
+  9600 baudios); redibujar todo con puntos sueltos son 19,6 KB (**20 s** a 9600, 1,7 s a 115200, descartado); con carga en bloque
+  (`addt`) son 1,4 KB (~1,5 s a 9600, 0,12 s a 115200). Resolución vertical de 256 niveles: con eje fijo de 0 a 100 % cada nivel valdría
+  0,39 % y el ruido normal no se vería, así que el eje es **automático**. Ventana: 700 puntos a 1 por segundo = ~12 min.
+- **Decisiones del usuario:** (1) la gráfica solo se abre desde `principal`; (2) si salta una alarma con la gráfica abierta, vuelve a `principal`
+  (se propuso: solo si está sin acusar); (3) un sensor sin señal deja un hueco; (4) se recomienda 115200 baudios.
+- **Cómo funciona (todo en la Pi; la pantalla sigue "tonta"):** `src/g2/pantalla/grafica.py` guarda las últimas 700 muestras de cada sensor,
+  calcula el eje (ancho mínimo de 5 % O2, números redondos, holgura de 10 %; se reescala enseguida si un valor se sale y solo se reduce
+  pasados 30 s para que la curva no salte) y genera las órdenes: `cle s0.id,255`, `addt s0.id,CANAL,N` (más los N bytes cuando la pantalla
+  responde `FE FF FF FF`; ella confirma con `FD FF FF FF`) y `add s0.id,CANAL,VALOR` para cada punto nuevo. Canales: 0 sensor 1, 1 sensor 2,
+  2 límite bajo y 3 límite alto de alarma (solo se dibujan si caen dentro del eje). **Sin dato = nivel 0** (la línea baja al borde inferior;
+  los valores válidos usan 1 a 255, así que no se confunden): el *Waveform* no sabe dejar un hueco, y esto es lo más parecido.
+- **Cuándo se abre y se cierra** (`interfaz.py`): `g2-ui` ordena `sendxy=1` al arrancar y en cada encendido, con lo que la pantalla avisa de
+  **cualquier** toque (`67 xx xx yy yy S`), no solo de los botones; sin tocar nada en el `.HMI`. Pasados `pantalla.grafica_espera_s` (10 s, 0 la
+  desactiva; clave nueva, editable por plataforma y localmente) sin toques, y solo con `principal` abierta, con el núcleo respondiendo y sin
+  alarmas **sin acusar**, ordena `page grafica`. Un toque (el *Hotspot* `salir`, a pantalla completa) ordena `page principal`. Con la gráfica abierta, si
+  salta una alarma sin acusar o el núcleo deja de responder, vuelve sola a `principal` **de inmediato** (el aviso rojo no puede quedar tapado; el
+  sonido y los relevos nunca dependen de la gráfica). Se toma una muestra por segundo **siempre**, para que al abrirla ya haya historia.
+- **Protecciones:** mientras un `addt` recibe sus bytes, ninguna otra orden sale (se guardan y se envían al terminar: mezclarlas corrompería los
+  datos); eso puede retrasar hasta ~2 s el regreso por alarma a 9600 baudios. Si la pantalla no responde al `addt` en 4 s, se deja de usar y la
+  gráfica se dibuja con `add`. Si el `.tft` no tiene la página `grafica` (responde «página inexistente»), se registra un error **una vez** y la gráfica
+  queda desactivada hasta que la pantalla se reinicie; así una pantalla con el `.tft` anterior no sufre.
+- **Probado:** 50 pruebas nuevas (523 en total): escala, niveles, límites, eventos del protocolo, la vista y 24 de la interfaz con la pantalla emulada
+  (cuándo se abre y cuándo no, cómo se cierra, alarma con la gráfica abierta, dibujo con `addt`, transferencia interrumpida, `add` de respaldo,
+  página inexistente). Un defecto encontrado por las pruebas: el seguro contra pedir la página dos veces retrasaba también el regreso por
+  alarma; corregido.
+- **Pendiente (con la pantalla real):** construir la página `grafica` en el `.HMI` (especificación, sección 15); comprobar que `sendxy=1` informa
+  de los toques sobre componentes y zonas vacías, que `addt` funciona en este modelo y la dirección (`dir`) del *Waveform*; poner `bauds=115200`
+  en *Program.s*. Una mejora futura: sembrar la gráfica con los promedios de 15 s de la base al arrancar `g2-ui`, para no empezar vacía tras un reinicio.
+
+---
+
 ## Decisiones pendientes
 
 - Probar las alertas por correo con MySQL y la cuenta real, y decidir cuándo

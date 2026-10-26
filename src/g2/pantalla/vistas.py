@@ -102,6 +102,29 @@ def vista_alarmas(config: Mapping[str, float], historial: list[Mapping]) -> Vist
     return v
 
 
+def vista_grafica(estado: Mapping | None, *, nucleo_responde: bool, marcas: tuple[str, str, str],
+                  ventana: str) -> Vista:
+    """Pagina ``grafica``: las marcas del eje vertical (arriba, en medio, abajo), lo que cubre el eje del tiempo y el
+    valor actual de cada sensor con el color de su linea (rojo si esta en alarma, gris si no tiene senal). La curva
+    misma no es un texto: la dibujan las ordenes ``add`` / ``addt`` (ver ``grafica.HistorialGrafica``)."""
+    v: Vista = {"grafica.y_max.txt": marcas[0], "grafica.y_med.txt": marcas[1], "grafica.y_min.txt": marcas[2],
+                "grafica.x_ini.txt": ventana}
+    sensores = list(estado["sensores"][:2]) if estado and nucleo_responde else [{}, {}]
+    for i in (1, 2):
+        s = sensores[i - 1] if i <= len(sensores) else {}
+        texto = s.get("estado") if nucleo_responde and s else "SIN SEÑAL"
+        if texto in ("BAJA", "ALTA"):
+            pco = COLOR["alarma"]
+        elif texto in ("SIN SEÑAL", "APAGADO"):
+            pco = COLOR["inactivo"]
+        else:
+            pco = COLOR[f"sensor{i}"]
+        valor = s.get("texto_o2", "--.-") if nucleo_responde and s else "--.-"
+        v[f"grafica.v{i}.txt"] = f"S{i}  {valor} %  {texto}"
+        v[f"grafica.v{i}.pco"] = pco
+    return v
+
+
 def vista_teclado(*, titulo: str, rotulo: str, valor: str, mensaje: str, mensaje_es_error: bool) -> Vista:
     """Pagina ``teclado``: titulo de la barra, que se esta tecleando, el campo (asteriscos si es un PIN) y
     el mensaje de ayuda (gris azulado) o de error (rojo)."""

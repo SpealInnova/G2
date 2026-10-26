@@ -6,6 +6,8 @@ de banco (tools/banco/pantalla.py). Si cambia la especificacion del HMI, se camb
 Pantalla -> Pi: tramas terminadas en ``FF FF FF``:
     65 PP CC 00   toque (PP = codigo de pagina, CC = codigo de control; ver las tablas de abajo)
     88            la pantalla acaba de encender
+    67 xx xx yy yy S   toque en cualquier punto (con ``sendxy=1``): coordenadas x, y y S = 1 al pulsar, 0 al soltar
+    FE            lista para recibir los datos de un ``addt``;  FD  termino de recibirlos
     70 ...        respuesta de texto a un ``get``;  71 xx xx xx xx   respuesta numerica (little endian)
     00 / 01 / 1A  etc.: codigo de resultado de una orden
 
@@ -22,7 +24,8 @@ VERSION_PROTOCOLO = 1                       # valor de principal.proto en el HMI
 
 # ---- Codigos de pagina (PP) y de control (CC), seccion 2 de la especificacion ---------------------
 PAGINAS = {0x00: "principal", 0x01: "alarmas", 0x02: "config", 0x03: "red", 0x04: "calibracion",
-           0x05: "sistema", 0x06: "teclado", 0x07: "reportes", 0x08: "confirmar", 0x09: "texto"}
+           0x05: "sistema", 0x06: "teclado", 0x07: "reportes", 0x08: "confirmar", 0x09: "texto",
+           0x0A: "grafica"}
 CODIGO_PAGINA = {nombre: codigo for codigo, nombre in PAGINAS.items()}
 PAGINA_CARGADA = 0xFE                       # CC comun a todas las paginas (Postinitialize)
 
@@ -40,6 +43,7 @@ CONTROLES: dict[int, dict[int, str]] = {
     0x06: {**{0x10 + d: f"k_{d}" for d in range(10)}, 0x1A: "k_punto", 0x1B: "k_signo",
            0x1C: "b_borrar", 0x1D: "b_limpiar", 0x1E: "b_cancelar", 0x1F: "b_aceptar"},
     0x08: {0x01: "b_si", 0x02: "b_no"},
+    0x0A: {0x01: "salir"},                  # grafica: un toque en cualquier parte vuelve a la principal
     # Teclado de texto: 40 teclas de caracteres (t_00 a t_39, codigos 00 a 27) y las de control.
     0x09: {**{n: f"t_{n:02d}" for n in range(40)}, 0x30: "b_mayus", 0x31: "b_simbolos", 0x32: "b_espacio",
            0x33: "b_borrar", 0x34: "b_limpiar", 0x35: "b_ver", 0x36: "b_cancelar", 0x37: "b_aceptar"},
@@ -48,7 +52,8 @@ CONTROLES: dict[int, dict[int, str]] = {
 # ---- Colores RGB565 en decimal, seccion 4 de la especificacion --------------------------------------
 COLOR = {"fondo": 63423, "tarjeta": 65535, "texto": 6438, "texto_suave": 25423, "barra": 6504,
          "normal": 1128, "alarma": 51427, "aviso": 62880, "calibrando": 726, "inactivo": 27568,
-         "boton": 57085, "boton_pulsado": 48730, "blanco": 65535}
+         "boton": 57085, "boton_pulsado": 48730, "blanco": 65535,
+         "sensor1": 6969, "sensor2": 58306}              # colores de las lineas de la grafica (azul y naranja)
 
 CODIGOS_RESPUESTA = {0x00: "orden invalida", 0x01: "orden correcta", 0x02: "componente inexistente",
                      0x03: "pagina inexistente", 0x04: "imagen inexistente", 0x05: "fuente inexistente",
@@ -76,6 +81,24 @@ class PantallaEncendida:
 
 
 @dataclass(frozen=True)
+class TocarPantalla:
+    """Toque en cualquier punto de la pantalla (llega con ``sendxy=1``): sirve para saber que alguien la esta usando."""
+    x: int
+    y: int
+    pulsado: bool
+
+
+@dataclass(frozen=True)
+class ListoParaDatos:
+    """La pantalla esta lista para recibir los bytes de un ``addt``."""
+
+
+@dataclass(frozen=True)
+class DatosRecibidos:
+    """La pantalla recibio todos los bytes de un ``addt``."""
+
+
+@dataclass(frozen=True)
 class RespuestaNumero:
     valor: int
 
@@ -96,8 +119,8 @@ class Desconocido:
     datos: bytes
 
 
-Evento = (Toque | PaginaCargada | PantallaEncendida | RespuestaNumero | RespuestaTexto
-          | CodigoResultado | Desconocido)
+Evento = (Toque | PaginaCargada | PantallaEncendida | TocarPantalla | ListoParaDatos | DatosRecibidos
+          | RespuestaNumero | RespuestaTexto | CodigoResultado | Desconocido)
 
 
 def interpretar(trama: bytes) -> Evento:
@@ -115,6 +138,12 @@ def interpretar(trama: bytes) -> Evento:
         return Toque(nombre_pagina, nombre, pulsado != 0)
     if tipo == 0x88 and len(trama) == 1:
         return PantallaEncendida()
+    if tipo == 0x67 and len(trama) == 6:
+        return TocarPantalla(int.from_bytes(trama[1:3], "big"), int.from_bytes(trama[3:5], "big"), trama[5] != 0)
+    if tipo == 0xFE and len(trama) == 1:
+        return ListoParaDatos()
+    if tipo == 0xFD and len(trama) == 1:
+        return DatosRecibidos()
     if tipo == 0x70:
         return RespuestaTexto(trama[1:].decode("iso-8859-1", errors="replace"))
     if tipo == 0x71 and len(trama) == 5:
@@ -143,6 +172,12 @@ def describir(evento: Evento) -> str:
         return f"pagina cargada: {evento.pagina}"
     if isinstance(evento, PantallaEncendida):
         return "pantalla encendida (lista)"
+    if isinstance(evento, TocarPantalla):
+        return f"toque en ({evento.x}, {evento.y})" + (" (pulsado)" if evento.pulsado else " (soltado)")
+    if isinstance(evento, ListoParaDatos):
+        return "lista para recibir datos"
+    if isinstance(evento, DatosRecibidos):
+        return "datos recibidos"
     if isinstance(evento, RespuestaTexto):
         return f"texto: {evento.texto}"
     if isinstance(evento, RespuestaNumero):
@@ -185,3 +220,4 @@ def orden_pagina(nombre: str) -> str:
 
 ORDEN_SONIDO_ALARMA = "play 0,1,0"          # canal 0, audio 1 (alarma.wav), una vez
 ORDEN_LEER_PROTOCOLO = "get principal.proto.val"
+ORDEN_INFORMAR_TOQUES = "sendxy=1"          # la pantalla avisa de CUALQUIER toque (no solo de los botones)
