@@ -275,3 +275,50 @@ decisión están en `MEMORIA_TECNICA.md`.
 - D-043: gráfica en tiempo de las dos señales (Waveform de 4 canales): se abre sola tras 10 s sin tocar `principal` y un toque la cierra;
   vuelve a `principal` si salta una alarma sin acusar. Toda la lógica está en la Pi (historial, eje automático, `addt`/`add`, `sendxy=1`).
   Especificación de la página en la sección 15 del HMI. 523 pruebas. Falta construir la página y probarla en la pantalla real.
+- D-044: reportes en PDF cifrado (contraseña = nombre del equipo) a memoria USB (debe llamarse como el equipo): filtro por días completos (máx. 7),
+  botón «imprimir hoy», filas con alerta de oxígeno en rojo y negrita con el umbral de ese momento, respeta el intervalo de guardado, resumen
+  con estado de la cadena de auditoría y huella SHA-256 en archivo y evento. Corre en un proceso aparte (la medición no se entera). Página
+  `reportes` (sección 16 del HMI). 618 pruebas. Hallazgo: la tarjeta SD salía como memoria USB (corregido). Falta construir la página, instalar con
+  sudo (polkit y librerías) y probar con una USB exFAT real.
+- Sonido «Calibrando» (voz del usuario): convertido a WAV mono 16 bits 16 kHz (0,61 s, pico 0,85) con la nueva herramienta tools/convertir_sonido_voz.py;
+  será el audio id 2 de la pantalla (play 0,2,0). Especificado en la sección 6 del HMI; falta agregarlo al .HMI cuando se construya la calibración.
+- D-045: la pantalla queda bloqueada mientras se genera un reporte (se descartan los toques en la Pi y se ordena `tsw 255,0` a la pantalla, repetido
+  en cada carga de página); se quitó el botón Cancelar; se libera sola si el núcleo no responde. Misma técnica para la calibración. 627 pruebas.
+  Falta comprobar en la pantalla real que `tsw 255,0` desactiva el toque.
+- USB real (NTFS): lsblk con PATH primero daba lista plana y no reconocía ninguna USB (corregido: NAME primero, 632 pruebas). El reporte llega hasta cifrar y falla
+  al copiar con «Read-only file system»: la unidad g2-core y la regla de polkit instaladas son anteriores a los cambios; falta correr instalar_servicios.sh con sudo.
+- Reporte: zona horaria de Colombia (America/Bogota, por defecto y fijada en la Pi); se quitó la zona del encabezado y la sección «Cambios de configuración»
+  del final. 631 pruebas.
+- Reporte PDF: sin «Software» ni modelo/serie de sensores, texto copiable (permite copiar e imprimir, no editar) y logo de SPEAL pequeño en la primera
+  página. Hecho en cuatro pasos comprobados uno a uno; 633 pruebas; probado con datos reales en la Pi.
+- Reporte PDF: el logo es el mismo de la pantalla Nextion (nextion/imagenes/logo.png, óvalo amarillo), no SPEAL_Air.
+- Reporte PDF: el logo pasa al extremo derecho de la cabecera de la primera página y el nombre del equipo se corre a su izquierda.
+- Umbrales de alarma restaurados en la Pi a los de fábrica (20 %, 92 %, 10 s, acuse 120 s; estaban 15 %, 95 %, 15 s, 500 s). Con el oxígeno real en ~93,7 % la
+  alarma de ALTO ahora se activa. Hallazgo: `muestreo.intervalo_guardado_s` sigue en 300 s (fijado desde la pantalla el 27/10), no se tocó.
+- Velocidad de la pantalla: sigue a 9600 baudios; falta `bauds=115200` en el HMI (la detección automática cubre ambos casos).
+- Reporte PDF: el anexo suma la sección «Estado de los sensores» (apagado, encendido, sin señal) y la primera página un renglón de resumen; sin migración. 636 pruebas;
+  comprobado con los datos reales del 27/10 en la Pi.
+- g2-uplink (D-046), etapa 1: servicio que envía a la plataforma por HTTPS (lotes durables con confirmación por registro + foto en vivo cada 15 s), con esperas
+  crecientes, secreto por equipo en un archivo 0600 y apagado por omisión (`plataforma.activa = 0`; falta `equipo.id` y el secreto). Solo lee la base: pide a g2-core
+  anotar los resultados con la orden `cola_resultado` (no es un comando). Migración 009 (eventos PLAT_*), `g2ctl plataforma-credencial` y `plataforma-estado`,
+  `systemd/g2-uplink.service`, regla de polkit e instalador actualizados. Contrato para la plataforma en CONTRATO_PLATAFORMA.md y plataforma simulada para probar.
+  704 pruebas (también en la Pi). Con una copia de la base real: 20.927 pendientes enviados y confirmados en 46 s. Hallazgo: auditoria_cadena se identifica por `seq`.
+  Falta: que la plataforma implemente el contrato, instalar con sudo y activar. No se tocó el repositorio de la plataforma.
+- g2-uplink vigila a g2-core (D-047): si el núcleo no responde 120 s seguidos pide a systemd reiniciarlo (máx. 3 por hora, 300 s entre intentos) y, al arrancar, el núcleo
+  registra la razón `SVC_BLOQUEO_DETECTADO` con un evento. Funciona aunque el envío esté desactivado. 749 pruebas (también en la Pi); en la Pi se probó el reinicio sin sudo
+  y el registro. No se probó con un núcleo congelado real (el watchdog de systemd actúa antes).
+- Cola de envío: se descartaron los 21.028 registros pendientes (todos de prueba) con la orden nueva `g2ctl cola-descartar --motivo ... [--confirmar]`. No borra nada (D-010):
+  las entradas pasan a `rechazado` con el motivo, los registros siguen en el equipo y no se depuran; deja un evento `NET_ENVIO_RECHAZADO`. Antes se sacó una copia de la base
+  (`/home/pi/g2/respaldos/g2_antes_de_descartar_cola_20261029_163042.db`). Cadena de auditoría OK. Desde ahora la plataforma solo recibirá lo que el equipo registre después.
+- Calibración de cero en aire (D-048): `calibrar_aire` (un sensor a la vez, con el otro vigilando) mide una ventana estable de 30 s (variación ≤ 0,3 %), guarda el cero
+  vigente si la corrección no pasa de ±3 % y, si no, deja un fallo sin aplicarlo; tope de 5 min. El sensor calibrado sale de la vigilancia y sus muestras quedan marcadas
+  (`en_spoc`). Migración 010 (`CAL_INICIADA`, `CAL_CANCELADA`), página `calibracion` en g2-ui (PIN, confirmación, bloqueo total como reportes, voz «Calibrando»),
+  sección 17 de la especificación del HMI y `g2ctl calibrar-aire / calibrar-cancelar`. 797 pruebas (también en la Pi), desplegado. Falta construir la página en el `.HMI` y probar con
+  un sensor y una pantalla reales.
+- Calibración por puntos con gas patrón (D-049), a pedido del usuario (D-048 solo calibraba el cero en aire): punto bajo (0,0 % o aire) y punto alto (98,0 %, 99,8 % u otro valor tecleado), cada
+  uno por separado; la recta `ganancia × mV/10 + cero` se compone con el último punto de cada lado. Límites: ganancia 0,90 a 1,10, cero ±3 %, puntos a 50 puntos o más, estable 0,3 % en 30 s,
+  tope 5 min. Migración 011 (ganancia y puntos en `calibracion`, tipo `puntos`, huella de auditoría ampliada; probada con una copia de la base real en la Pi), orden `calibrar_punto`,
+  `g2ctl calibrar-punto`, página `calibracion` rehecha (sección 17 del HMI), reporte PDF y contrato con la plataforma actualizados. 828 pruebas. **Sin desplegar** en la Pi mientras el usuario
+  prueba la pantalla con la configuración anterior. Aparte: reintento al reemplazar el archivo de estado en Windows y una prueba de reportes que dependía de la fecha.
+- D-049 desplegada en la Pi (copia previa de la base, esquema 11, auditoría correcta). Causa de que `v_gas` no abriera el teclado: la Pi aún traía la tabla de controles de la página
+  `calibracion` de D-048 (solo `01` a `03`) y el `.HMI` nuevo envía `01` a `07`. La migración 011 conserva como punto bajo las calibraciones de cero en aire ya hechas (S1 +0,04 %, S2 +0,10 %).

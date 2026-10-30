@@ -6,6 +6,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 
 from g2 import ipc
@@ -29,8 +30,12 @@ class DatosFalsos:
         self.cola = 3
         self.auditoria = (True, 0)
         self.sensores_activos = [True, True]
+        self.vigentes = {}
         self.volumen = 50.0
         self.grafica_espera = 0.0                             # desactivada salvo en las pruebas de la grafica
+        self.nombre = ""                                      # nombre del equipo (vacio hasta que una prueba lo defina)
+        self.registros: int | None = 120                      # filas que traeria un reporte de cualquier rango
+        self.usb = ("Memoria USB «ANZD-000000001» lista", True)
         sal, huella, iteraciones = seguridad_pin.nueva_huella(PIN_DE_PRUEBA, iteraciones=10_000)
         self.pin = {"tipo": "fabrica", "sal": sal, "huella": huella, "iteraciones": iteraciones}
 
@@ -43,7 +48,16 @@ class DatosFalsos:
                 "pantalla.grafica_espera_s": self.grafica_espera}
 
     def datos_del_equipo(self):
-        return {"equipo.nombre": "", "equipo.id": ""}
+        return {"equipo.nombre": self.nombre, "equipo.id": ""}
+
+    def zona_horaria(self):
+        return "America/Bogota"
+
+    def contar_registros(self, inicio_ms, fin_ms):
+        return self.registros
+
+    def estado_usb(self, nombre):
+        return self.usb
 
     def sensores(self):
         return [{"id": n + 1, "nombre": f"Sensor {n + 1}", "modelo": "Paracube Micro", "serie_etiqueta": None,
@@ -64,6 +78,9 @@ class DatosFalsos:
     def cola_pendiente(self) -> int:
         return self.cola
 
+    def calibraciones_vigentes(self):
+        return dict(self.vigentes)
+
 
 def estado(s1=("20.9", "NORMAL", False), s2=("20.9", "NORMAL", False), aviso="Sin alarmas", sonar=False) -> dict:
     def o2(texto):
@@ -83,7 +100,8 @@ class BaseInterfaz(unittest.TestCase):
         self.enlace = EnlaceEmulado()
         self.datos = DatosFalsos()
         self.ui = Interfaz(self.enlace, self.cliente, self.datos, reloj=lambda: self.t[0],
-                           hora=lambda: "12:34", red=lambda: "WIFI OK", segundo_plano=lambda tarea: tarea())
+                           hora=lambda: "12:34", red=lambda: "WIFI OK", segundo_plano=lambda tarea: tarea(),
+                           hoy=lambda zona: date(2026, 10, 27))
         self.nucleo.publicar(estado())
 
     def tearDown(self) -> None:
@@ -250,14 +268,11 @@ class PruebasNavegacionYOrdenes(BaseInterfaz):
         self.assertEqual((ordenes[0]["tipo"], ordenes[0]["actor"], ordenes[0]["origen"]),
                          ("acusar", "pantalla", "pantalla"))
 
-    def test_las_paginas_aun_sin_construir_muestran_un_aviso_pasajero(self) -> None:
+    def test_calibrar_abre_la_pagina_de_calibracion(self) -> None:
         self.arrancar_en_principal()
         self.enlace.tocar("principal", "b_calib")
         self.ui.paso()
-        self.assertEqual(self.enlace.ordenes_con("aviso.txt=")[-1], 'principal.aviso.txt="Página en construcción"')
-        self.assertNotIn("page calibracion", self.enlace.enviadas)              # esa pagina todavia no existe
-        self.avanzar(4.0)
-        self.assertEqual(self.enlace.ordenes_con("aviso.txt=")[-1], 'principal.aviso.txt="Sin alarmas"')
+        self.assertEqual(self.enlace.enviadas[-1], "page calibracion")
 
     def test_un_toque_en_una_pagina_distinta_a_la_actual_no_rompe_nada(self) -> None:
         self.arrancar_en_principal()
@@ -603,11 +618,10 @@ class PruebasPaginaSistema(BaseEtapa1):
         self.tocar("sistema", "b_volver")
         self.assertEqual(self.enlace.enviadas[-1], "page principal")
 
-    def test_reportes_aun_no_existe_y_lo_dice(self) -> None:
+    def test_reportes_abre_su_pagina(self) -> None:
         self.abrir_sistema()
         self.tocar("sistema", "b_reportes")
-        self.avanzar(0.5)
-        self.assertEqual(self.pintado("sistema.res.txt"), 'sistema.res.txt="Reportes: próxima etapa"')
+        self.assertEqual(self.enlace.enviadas[-1], "page reportes")
 
     # ---- reiniciar servicios y equipo: PIN + confirmacion + orden ----
     def test_reiniciar_servicios_pide_pin_luego_confirmacion_y_luego_la_orden(self) -> None:
@@ -1664,6 +1678,496 @@ class PruebasGrafica(BaseInterfaz):
             self.ui.paso()
         self.assertIn("la pantalla rechazo una orden:", registro.output[0])
 
+
+def reporte_publicado(en_curso=False, ultimo=None, **avance) -> dict:
+    """Lo que el nucleo publica en ``estado["reporte"]`` (ver ServicioReportes.estado)."""
+    return {"en_curso": en_curso, "desde": None, "hasta": None, "ultimo": ultimo,
+            **({"fase": "dibujando", "progreso": 40, "mensaje": "Dibujando páginas... 40 %", **avance} if en_curso else {})}
+
+
+class PruebasPaginaReportes(BaseEtapa1):
+    """D-044: rango de fechas con el teclado numerico, reporte de hoy, memoria USB y avance."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.datos.nombre = "ANZD-000000001"
+
+    def publicar_reporte(self, **kwargs) -> None:
+        est = estado()
+        est["reporte"] = reporte_publicado(**kwargs)
+        self.publicar(est)
+
+    def abrir_reportes(self) -> None:
+        self.publicar_reporte()
+        self.arrancar_en_principal()
+        self.enlace.tocar("principal", "b_sistema")
+        self.ui.paso()
+        self.cargar("sistema")
+        self.avanzar(2.5)
+        self.tocar("sistema", "b_reportes")
+        self.cargar("reportes")
+        self.avanzar(3.5)                                              # lee la base y revisa la memoria USB
+
+    def escribir_fecha(self, control: str, digitos: str) -> None:
+        self.tocar("reportes", control)
+        self.cargar("teclado")
+        for d in digitos:
+            self.enlace.tocar("teclado", f"k_{d}")
+        self.enlace.tocar("teclado", "b_aceptar")
+        self.ui.paso()
+        self.cargar("reportes")
+        self.avanzar(2.5)
+
+    def test_al_abrir_el_rango_es_hoy_y_dice_cuantos_registros_trae(self) -> None:
+        self.abrir_reportes()
+        self.assertEqual(self.pintado("reportes.v_desde.txt"), 'reportes.v_desde.txt="Desde: 27/10/2026"')
+        self.assertEqual(self.pintado("reportes.v_hasta.txt"), 'reportes.v_hasta.txt="Hasta: 27/10/2026"')
+        self.assertEqual(self.pintado("reportes.i2.txt"), 'reportes.i2.txt="1 día(s) · 120 registros por sensor"')
+        self.assertEqual(self.pintado("reportes.b_generar.txt"), 'reportes.b_generar.txt="Generar reporte"')
+        self.assertEqual(self.pintado("reportes.i1.txt"), 'reportes.i1.txt="Memoria USB «ANZD-000000001» lista"')
+
+    def test_la_fecha_se_escribe_con_el_teclado_numerico_y_se_muestra_con_barras(self) -> None:
+        self.abrir_reportes()
+        self.tocar("reportes", "v_desde")
+        self.cargar("teclado")
+        for d in "2110":
+            self.enlace.tocar("teclado", f"k_{d}")
+        self.ui.paso()
+        self.avanzar(0.5)
+        self.assertEqual(self.pintado("teclado.valor.txt"), 'teclado.valor.txt="21/10"')
+        self.assertEqual(self.pintado("teclado.t_titulo.txt"), 'teclado.t_titulo.txt="Desde (día/mes/año)"')
+
+    def test_una_fecha_completa_actualiza_el_rango_sin_pedir_pin(self) -> None:
+        self.abrir_reportes()
+        self.escribir_fecha("v_desde", "21102026")
+        self.assertEqual(self.pintado("reportes.v_desde.txt"), 'reportes.v_desde.txt="Desde: 21/10/2026"')
+        self.assertEqual(self.pintado("reportes.i2.txt"), 'reportes.i2.txt="7 día(s) · 120 registros por sensor"')
+
+    def test_mas_de_siete_dias_se_marca_en_rojo_y_no_se_puede_generar(self) -> None:
+        self.abrir_reportes()
+        self.escribir_fecha("v_desde", "20102026")
+        self.assertEqual(self.pintado("reportes.i2.txt"), 'reportes.i2.txt="Máximo 7 días por reporte"')
+        self.assertEqual(self.pintado("reportes.i2.pco"), "reportes.i2.pco=51427")
+        self.tocar("reportes", "b_generar")
+        self.avanzar(0.5)
+        self.assertEqual(self.ordenes(), [])
+        self.assertEqual(self.pintado("reportes.res.txt"), 'reportes.res.txt="Máximo 7 días por reporte"')
+
+    def test_fecha_inicial_posterior_a_la_final(self) -> None:
+        self.abrir_reportes()
+        self.escribir_fecha("v_hasta", "25102026")
+        self.assertEqual(self.pintado("reportes.i2.txt"), 'reportes.i2.txt="La fecha inicial es posterior a la final"')
+
+    def test_una_fecha_futura_o_inexistente_no_se_acepta(self) -> None:
+        self.abrir_reportes()
+        for digitos, mensaje in (("28102026", "No hay datos de fechas futuras"), ("31022026", "Esa fecha no existe"),
+                                 ("2710", "Escriba 8 dígitos: día, mes y año (DDMMAAAA)")):
+            self.tocar("reportes", "v_hasta")
+            self.cargar("teclado")
+            for d in digitos:
+                self.enlace.tocar("teclado", f"k_{d}")
+            self.enlace.tocar("teclado", "b_aceptar")
+            self.ui.paso()
+            self.avanzar(0.5)
+            self.assertEqual(self.pintado("teclado.msg.txt"), f'teclado.msg.txt="{mensaje}"')
+            self.enlace.tocar("teclado", "b_cancelar")
+            self.ui.paso()
+            self.cargar("reportes")
+
+    def test_generar_pide_el_pin_y_despues_envia_la_orden(self) -> None:
+        self.abrir_reportes()
+        self.tocar("reportes", "b_generar")
+        self.assertEqual(self.enlace.enviadas[-1], "page teclado")
+        self.assertEqual(self.ordenes(), [])                               # nada se pide antes del PIN
+        self.pasar_el_pin()
+        orden, = self.ordenes()
+        self.assertEqual((orden["tipo"], orden["desde"], orden["hasta"]), ("reporte_generar", "2026-10-27", "2026-10-27"))
+        self.assertEqual(self.enlace.enviadas[-1], "page reportes")
+
+    def test_imprimir_hoy_envia_el_rango_de_hoy_aunque_haya_otro_elegido(self) -> None:
+        self.abrir_reportes()
+        self.escribir_fecha("v_desde", "24102026")
+        self.tocar("reportes", "b_hoy")
+        self.pasar_el_pin()
+        orden, = self.ordenes()
+        self.assertEqual((orden["desde"], orden["hasta"]), ("2026-10-27", "2026-10-27"))
+
+    def test_sin_memoria_usb_no_pide_ni_el_pin(self) -> None:
+        self.datos.usb = ("Inserte la memoria USB llamada «ANZD-000000001»", False)
+        self.abrir_reportes()
+        self.assertEqual(self.pintado("reportes.i1.pco"), "reportes.i1.pco=51427")
+        self.tocar("reportes", "b_generar")
+        self.avanzar(0.5)
+        self.assertNotEqual(self.enlace.enviadas[-1], "page teclado")
+        self.assertEqual(self.pintado("reportes.res.txt"),
+                         'reportes.res.txt="Inserte la memoria USB llamada «ANZD-000000001»"')
+        self.assertEqual(self.ordenes(), [])
+
+    def test_sin_nombre_del_equipo_no_se_genera(self) -> None:
+        self.datos.nombre = ""
+        self.abrir_reportes()
+        self.tocar("reportes", "b_generar")
+        self.avanzar(0.5)
+        self.assertEqual(self.ordenes(), [])
+        self.assertIn("nombre del equipo", self.pintado("reportes.res.txt"))
+
+    def test_mientras_corre_muestra_el_avance_y_los_botones_apagados(self) -> None:
+        self.abrir_reportes()
+        self.publicar_reporte(en_curso=True)
+        self.avanzar(2.0)
+        self.assertEqual(self.pintado("reportes.b_generar.txt"), 'reportes.b_generar.txt="Generando..."')
+        self.assertEqual(self.pintado("reportes.barra.val"), "reportes.barra.val=40")
+        self.assertEqual(self.pintado("reportes.prog.txt"), 'reportes.prog.txt="Dibujando páginas... 40 %"')
+        self.assertEqual(self.pintado("reportes.res.txt"), 'reportes.res.txt="No toque la pantalla ni retire la memoria USB"')
+        for boton in ("b_generar", "b_hoy", "b_volver", "v_desde", "v_hasta"):
+            self.assertEqual(self.pintado(f"reportes.{boton}.pco"), f"reportes.{boton}.pco=27568")
+
+    def test_mientras_corre_la_pantalla_ignora_todos_los_toques(self) -> None:
+        self.abrir_reportes()
+        self.publicar_reporte(en_curso=True)
+        self.avanzar(2.0)
+        antes = len(self.enlace.enviadas)
+        for control in ("b_generar", "b_hoy", "b_volver", "v_desde", "v_hasta"):
+            self.tocar("reportes", control)
+        self.avanzar(0.5)
+        self.assertEqual(self.ordenes(), [])                               # ni otro reporte ni cancelar
+        self.assertFalse([o for o in self.enlace.enviadas[antes:] if o.startswith("page ")])   # y no sale de la pagina
+
+    def test_mientras_corre_ordena_a_la_pantalla_ignorar_los_toques_y_al_terminar_los_devuelve(self) -> None:
+        self.abrir_reportes()
+        self.assertNotIn("tsw 255,0", self.enlace.enviadas)
+        self.publicar_reporte(en_curso=True)
+        self.avanzar(2.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,0"), 1)       # una sola vez, no cada refresco
+        self.publicar_reporte(ultimo={"numero": 1, "ok": True, "filas": 10, "paginas": 1, "sha256": "ab" * 32,
+                                      "desmontada": True, "mensaje": "ok"})
+        self.avanzar(2.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,1"), 1)
+        self.assertEqual(self.pintado("reportes.b_generar.txt"), 'reportes.b_generar.txt="Generar reporte"')
+        self.tocar("reportes", "b_volver")                                 # ya libre
+        self.assertEqual(self.enlace.enviadas[-1], "page sistema")
+
+    def test_una_pagina_recien_cargada_repite_el_bloqueo(self) -> None:
+        self.abrir_reportes()
+        self.publicar_reporte(en_curso=True)
+        self.avanzar(2.0)
+        self.cargar("reportes")                                            # la pantalla recargo la pagina: trae los toques habilitados
+        self.avanzar(2.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,0"), 2)
+
+    def test_si_el_nucleo_deja_de_responder_la_pantalla_se_libera(self) -> None:
+        self.abrir_reportes()
+        self.publicar_reporte(en_curso=True)
+        self.avanzar(2.0)
+        self.publicando = False                                            # el estado envejece: nadie lo republica
+        self.avanzar(self.ui.max_edad_s + 3.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,1"), 1)
+        self.tocar("reportes", "b_volver")
+        self.assertEqual(self.enlace.enviadas[-1], "page sistema")
+
+    def test_al_pedir_el_reporte_se_bloquea_antes_de_que_el_nucleo_responda(self) -> None:
+        self.abrir_reportes()
+        self.tocar("reportes", "b_generar")
+        self.pasar_el_pin()
+        self.cargar("reportes")
+        self.tocar("reportes", "b_volver")                                 # llega antes de que el nucleo marque en_curso
+        self.assertNotEqual(self.enlace.enviadas[-1], "page sistema")
+        self.avanzar(0.5)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,0"), 1)
+
+    def test_si_se_reinicia_la_interfaz_con_un_reporte_en_curso_vuelve_a_la_pagina_de_reportes(self) -> None:
+        self.publicar_reporte(en_curso=True)
+        self.arrancar_en_principal()
+        self.avanzar(1.5)
+        self.assertEqual(self.enlace.enviadas.count("page reportes"), 1)
+        self.cargar("reportes")
+        self.avanzar(2.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,0"), 1)
+        self.tocar("reportes", "b_volver")
+        self.assertEqual(self.enlace.enviadas.count("page sistema"), 0)
+
+    def test_el_resultado_correcto_muestra_la_huella(self) -> None:
+        self.abrir_reportes()
+        ultimo = {"numero": 1, "ok": True, "filas": 5760, "paginas": 105, "sha256": "b3ae8fcc33fe4b075848da6d",
+                  "desmontada": True, "mensaje": "Reporte copiado a la memoria USB"}
+        self.publicar_reporte(ultimo=ultimo)
+        self.avanzar(2.0)
+        self.assertEqual(self.pintado("reportes.res.txt"),
+                         'reportes.res.txt="Listo: 5760 filas, 105 págs. Huella b3ae8fcc33fe"')
+        self.assertEqual(self.pintado("reportes.res.pco"), "reportes.res.pco=25423")
+
+    def test_un_error_del_reporte_se_muestra_en_rojo(self) -> None:
+        self.abrir_reportes()
+        ultimo = {"numero": 1, "ok": False, "cancelado": False, "mensaje": "No hay espacio suficiente en la memoria USB"}
+        self.publicar_reporte(ultimo=ultimo)
+        self.avanzar(2.0)
+        self.assertEqual(self.pintado("reportes.res.txt"), 'reportes.res.txt="No hay espacio suficiente en la memoria USB"')
+        self.assertEqual(self.pintado("reportes.res.pco"), "reportes.res.pco=51427")
+
+    def test_un_resultado_anterior_a_abrir_la_pagina_no_se_muestra(self) -> None:
+        self.publicar_reporte(ultimo={"numero": 3, "ok": False, "cancelado": False, "mensaje": "viejo"})
+        self.abrir_reportes()
+        self.assertEqual(self.pintado("reportes.res.txt"), 'reportes.res.txt=""')
+
+    def test_si_el_nucleo_no_acepta_la_orden_lo_dice(self) -> None:
+        self.abrir_reportes()
+        self.tocar("reportes", "b_generar")
+        self.pasar_el_pin()
+        self.cargar("reportes")
+        self.avanzar(8.0)                                                 # el nucleo nunca marca en_curso ni responde
+        self.assertEqual(self.pintado("reportes.res.txt"), 'reportes.res.txt="El equipo no aceptó el reporte"')
+
+    def test_volver_regresa_a_sistema(self) -> None:
+        self.abrir_reportes()
+        self.tocar("reportes", "b_volver")
+        self.assertEqual(self.enlace.enviadas[-1], "page sistema")
+
+    def test_revisa_la_memoria_usb_con_el_nombre_del_equipo(self) -> None:
+        pedidos = []
+        self.datos.estado_usb = lambda nombre: (pedidos.append(nombre), ("ok", True))[1]
+        self.abrir_reportes()
+        self.assertIn("ANZD-000000001", pedidos)
+
+
+def calibracion_publicada(en_curso=False, ultima=None, **extra) -> dict:
+    base = {"en_curso": en_curso, "ultima": ultima}
+    if en_curso:
+        base.update({"sensor_id": 1, "nombre": "Sensor 1", "referencia_pct": 98.0, "casilla": "alto", "transcurrido_s": 45.0,
+                     "tope_s": 300.0, "variacion_pct": 1.8, "estable_pct": 0.3, "o2": 35.2, "texto_o2": "35.2"})
+    return {**base, **extra}
+
+
+def resultado_calibracion(numero=1, ok=True, mensaje="Punto alto 98 % listo: gan. 1.005, cero +0.00 %") -> dict:
+    return {"numero": numero, "sensor_id": 1, "nombre": "Sensor 1", "ok": ok, "offset_pct": 0.0, "ganancia": 1.005,
+            "referencia_pct": 98.0, "mensaje": mensaje}
+
+
+class PruebasPaginaCalibracion(BaseEtapa1):
+    """D-048, D-049: se elige el sensor y el gas patron, se pide PIN y confirmacion, y mientras dura la pantalla queda bloqueada."""
+
+    def publicar_cal(self, **kwargs) -> None:
+        est = estado()
+        est["calibracion"] = calibracion_publicada(**kwargs)
+        self.publicar(est)
+
+    def abrir_calibracion(self) -> None:
+        self.publicar_cal()
+        self.abrir("calibracion", "b_calib")
+
+    def escribir_gas(self, digitos: str, aceptar: bool = True) -> None:
+        self.tocar("calibracion", "v_gas")
+        self.cargar("teclado")
+        for d in digitos:
+            self.enlace.tocar("teclado", "k_punto" if d == "." else f"k_{d}")
+        if aceptar:
+            self.enlace.tocar("teclado", "b_aceptar")
+        self.ui.paso()
+        self.avanzar(0.5)
+
+    def pedir_calibracion(self) -> None:
+        self.tocar("calibracion", "b_iniciar")
+        self.pasar_el_pin()
+        self.cargar("confirmar")
+        self.tocar("confirmar", "b_si")
+
+    def test_al_abrir_muestra_los_sensores_el_gas_y_la_calibracion_vigente(self) -> None:
+        self.datos.vigentes = {1: {"offset_pct": -0.2, "ganancia": 1.005, "bajo_ref_pct": 0.0, "alto_ref_pct": 98.0}}
+        self.abrir_calibracion()
+        self.assertEqual(self.pintado("calibracion.v_s1.txt"), 'calibracion.v_s1.txt="Sensor 1  20.9 %"')
+        self.assertEqual(self.pintado("calibracion.v_s2.txt"), 'calibracion.v_s2.txt="Sensor 2  20.9 %"')
+        self.assertEqual(self.pintado("calibracion.v_gas.txt"), 'calibracion.v_gas.txt="Gas: 0.0 %"')
+        self.assertEqual(self.pintado("calibracion.i1.txt"), 'calibracion.i1.txt="Sensor 1 con gas de 0.0 %: punto bajo (corrige el cero)"')
+        self.assertEqual(self.pintado("calibracion.i2.txt"),
+                         'calibracion.i2.txt="Vigente: gan. 1.005  cero -0.20 %  bajo 0  alto 98"')
+        self.assertEqual(self.pintado("calibracion.v_s1.bco"), "calibracion.v_s1.bco=48730")             # el elegido
+        self.assertEqual(self.pintado("calibracion.v_s2.bco"), "calibracion.v_s2.bco=57085")
+        self.assertEqual(self.pintado("calibracion.b_bajo.bco"), "calibracion.b_bajo.bco=48730")         # 0.0 % es el bajo
+
+    def test_sin_calibracion_dice_que_rige_la_de_fabrica(self) -> None:
+        self.abrir_calibracion()
+        self.assertEqual(self.pintado("calibracion.i2.txt"), 'calibracion.i2.txt="Vigente: de fábrica (sin calibrar)"')
+
+    def test_elegir_sensor_y_gas_no_pide_pin_ni_ordena_nada(self) -> None:
+        self.abrir_calibracion()
+        self.tocar("calibracion", "v_s2")
+        self.tocar("calibracion", "b_aire")
+        self.avanzar(0.5)
+        self.assertEqual(self.pintado("calibracion.v_s2.bco"), "calibracion.v_s2.bco=48730")
+        self.assertEqual(self.pintado("calibracion.v_s1.bco"), "calibracion.v_s1.bco=57085")
+        self.assertEqual(self.pintado("calibracion.v_gas.txt"), 'calibracion.v_gas.txt="Gas: 20.9 %"')
+        self.assertEqual(self.pintado("calibracion.i1.txt"), 'calibracion.i1.txt="Sensor 2 con gas de 20.9 %: punto bajo (corrige el cero)"')
+        self.assertEqual(self.ordenes(), [])
+        self.assertNotEqual(self.enlace.enviadas[-1], "page teclado")
+
+    def test_el_gas_se_teclea_con_el_teclado_numerico(self) -> None:
+        self.abrir_calibracion()
+        self.escribir_gas("99.8")
+        self.assertEqual(self.enlace.enviadas[-1], "page calibracion")
+        self.cargar("calibracion")
+        self.avanzar(0.5)
+        self.assertEqual(self.pintado("calibracion.v_gas.txt"), 'calibracion.v_gas.txt="Gas: 99.8 %"')
+        self.assertEqual(self.pintado("calibracion.i1.txt"), 'calibracion.i1.txt="Sensor 1 con gas de 99.8 %: punto alto (corrige la ganancia)"')
+        self.assertEqual(self.pintado("calibracion.b_bajo.bco"), "calibracion.b_bajo.bco=57085")         # ya no es un atajo
+        self.assertEqual(self.ordenes(), [])
+
+    def test_el_teclado_de_gas_muestra_titulo_valor_actual_y_rango(self) -> None:
+        self.abrir_calibracion()
+        self.escribir_gas("98", aceptar=False)
+        self.assertEqual(self.pintado("teclado.titulo.txt"), 'teclado.titulo.txt="Gas patrón"')
+        self.assertEqual(self.pintado("teclado.t_titulo.txt"), 'teclado.t_titulo.txt="Concentración de O2 (%)"')
+        self.assertEqual(self.pintado("teclado.msg.txt"), 'teclado.msg.txt="Actual: 0.0 %. Entre 0 y 100 %"')
+        self.assertEqual(self.pintado("teclado.valor.txt"), 'teclado.valor.txt="98"')
+
+    def test_un_gas_fuera_de_rango_o_vacio_no_se_acepta(self) -> None:
+        self.abrir_calibracion()
+        for digitos, mensaje in (("150", "Entre 0 y 100 %"), ("", "Escriba la concentración del gas")):
+            self.escribir_gas(digitos)
+            self.assertEqual(self.pintado("teclado.msg.txt"), f'teclado.msg.txt="{mensaje}"')
+            self.assertNotEqual(self.enlace.enviadas[-1], "page calibracion")
+            self.enlace.tocar("teclado", "b_limpiar")
+            self.ui.paso()
+            self.enlace.tocar("teclado", "b_cancelar")
+            self.ui.paso()
+            self.cargar("calibracion")
+        self.assertEqual(self.ordenes(), [])
+
+    def test_calibrar_pide_pin_y_confirmacion_con_el_sensor_y_el_gas_y_despues_la_orden(self) -> None:
+        self.abrir_calibracion()
+        self.tocar("calibracion", "v_s2")
+        self.escribir_gas("99.8")
+        self.cargar("calibracion")
+        self.tocar("calibracion", "b_iniciar")
+        self.assertEqual(self.enlace.enviadas[-1], "page teclado")
+        self.assertEqual(self.ordenes(), [])                               # nada se pide antes del PIN
+        self.pasar_el_pin()
+        self.cargar("confirmar")
+        self.avanzar(0.5)
+        self.assertEqual(self.pintado("confirmar.t_pregunta.txt"), 'confirmar.t_pregunta.txt="¿Calibrar el Sensor 2 con gas de 99.8 %?"')
+        self.assertIn("Punto alto", self.pintado("confirmar.t_detalle.txt"))
+        self.assertEqual(self.ordenes(), [])                               # ni antes de confirmar
+        self.tocar("confirmar", "b_si")
+        orden, = self.ordenes()
+        self.assertEqual((orden["tipo"], orden["sensor_id"], orden["referencia_pct"], orden["actor"]),
+                         ("calibrar_punto", 2, 99.8, "pantalla"))
+        self.assertEqual(self.enlace.enviadas[-1], "page calibracion")
+
+    def test_decir_que_no_en_la_confirmacion_no_pide_nada(self) -> None:
+        self.abrir_calibracion()
+        self.tocar("calibracion", "b_iniciar")
+        self.pasar_el_pin()
+        self.cargar("confirmar")
+        self.tocar("confirmar", "b_no")
+        self.assertEqual(self.ordenes(), [])
+
+    def test_un_sensor_apagado_o_sin_otro_vigilando_no_pide_ni_el_pin(self) -> None:
+        self.datos.sensores_activos = [True, False]
+        self.abrir_calibracion()
+        self.tocar("calibracion", "v_s2")
+        self.tocar("calibracion", "b_iniciar")
+        self.avanzar(0.5)
+        self.assertEqual(self.pintado("calibracion.res.txt"), 'calibracion.res.txt="El Sensor 2 no está activo"')
+        self.tocar("calibracion", "v_s1")
+        self.tocar("calibracion", "b_iniciar")
+        self.avanzar(0.5)
+        self.assertEqual(self.pintado("calibracion.res.txt"), 'calibracion.res.txt="Encienda el otro sensor: debe seguir vigilando"')
+        self.assertNotEqual(self.enlace.enviadas[-1], "page teclado")
+        self.assertEqual(self.ordenes(), [])
+
+    def test_mientras_calibra_muestra_el_avance_y_los_controles_apagados(self) -> None:
+        self.abrir_calibracion()
+        self.publicar_cal(en_curso=True)
+        self.avanzar(2.0)
+        self.assertEqual(self.pintado("calibracion.i1.txt"), 'calibracion.i1.txt="Calibrando Sensor 1 con gas de 98.0 %"')
+        self.assertEqual(self.pintado("calibracion.i2.txt"), 'calibracion.i2.txt="Variación 1.80 % (debe bajar de 0.30 %)"')
+        self.assertEqual(self.pintado("calibracion.i3.txt"), 'calibracion.i3.txt="Tiempo 45 s de 300 s como máximo"')
+        self.assertEqual(self.pintado("calibracion.barra.val"), "calibracion.barra.val=15")
+        self.assertEqual(self.pintado("calibracion.b_iniciar.txt"), 'calibracion.b_iniciar.txt="Calibrando..."')
+        self.assertEqual(self.pintado("calibracion.res.txt"), 'calibracion.res.txt="No toque la pantalla ni mueva el sensor"')
+        for control in ("v_s1", "v_s2", "v_gas", "b_bajo", "b_aire", "b_iniciar", "b_volver"):
+            self.assertEqual(self.pintado(f"calibracion.{control}.pco"), f"calibracion.{control}.pco=27568")
+
+    def test_mientras_calibra_se_ignoran_los_toques_y_se_ordena_bloquear_la_pantalla(self) -> None:
+        self.abrir_calibracion()
+        self.publicar_cal(en_curso=True)
+        self.avanzar(2.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,0"), 1)
+        antes = len(self.enlace.enviadas)
+        for control in ("v_s1", "v_s2", "b_bajo", "b_aire", "v_gas", "b_iniciar", "b_volver"):
+            self.tocar("calibracion", control)
+        self.avanzar(0.5)
+        self.assertEqual(self.ordenes(), [])
+        self.assertFalse([o for o in self.enlace.enviadas[antes:] if o.startswith("page ")])
+
+    def test_al_terminar_libera_la_pantalla_y_muestra_el_resultado(self) -> None:
+        self.abrir_calibracion()
+        self.publicar_cal(en_curso=True)
+        self.avanzar(2.0)
+        self.publicar_cal(ultima=resultado_calibracion())
+        self.avanzar(2.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,1"), 1)
+        self.assertIn("Punto alto 98 % listo", self.pintado("calibracion.res.txt"))
+        self.assertEqual(self.pintado("calibracion.res.pco"), "calibracion.res.pco=25423")      # gris azulado: salio bien
+        self.assertEqual(self.pintado("calibracion.b_iniciar.txt"), 'calibracion.b_iniciar.txt="Calibrar este punto"')
+        self.tocar("calibracion", "b_volver")
+        self.assertEqual(self.enlace.enviadas[-1], "page principal")
+
+    def test_un_fallo_se_muestra_en_rojo(self) -> None:
+        self.abrir_calibracion()
+        self.publicar_cal(en_curso=True)
+        self.avanzar(2.0)
+        self.publicar_cal(ultima=resultado_calibracion(ok=False, mensaje="Mide 90.1 % con gas de 0 %. Cero -90.1 % pasa de ±3: ¿gas correcto?"))
+        self.avanzar(2.0)
+        self.assertEqual(self.pintado("calibracion.res.pco"), "calibracion.res.pco=51427")
+        self.assertIn("¿gas correcto?", self.pintado("calibracion.res.txt"))
+
+    def test_una_calibracion_vieja_de_antes_de_abrir_no_se_muestra(self) -> None:
+        self.publicar_cal(ultima=resultado_calibracion(numero=4, mensaje="vieja"))
+        self.abrir("calibracion", "b_calib")
+        self.assertNotIn("vieja", self.pintado("calibracion.res.txt"))
+
+    def test_al_pedirla_se_bloquea_antes_de_que_el_nucleo_responda(self) -> None:
+        self.abrir_calibracion()
+        self.pedir_calibracion()
+        self.cargar("calibracion")
+        self.tocar("calibracion", "b_volver")                              # llega antes de que el nucleo marque en_curso
+        self.assertNotEqual(self.enlace.enviadas[-1], "page principal")
+        self.avanzar(0.5)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,0"), 1)
+
+    def test_si_el_nucleo_no_la_acepta_se_libera_y_lo_dice(self) -> None:
+        self.abrir_calibracion()
+        self.pedir_calibracion()
+        self.cargar("calibracion")
+        self.avanzar(8.0)                                                  # el nucleo nunca marca en_curso
+        self.assertEqual(self.pintado("calibracion.res.txt"), 'calibracion.res.txt="El equipo no aceptó la calibración"')
+        self.tocar("calibracion", "b_volver")
+        self.assertEqual(self.enlace.enviadas[-1], "page principal")
+
+    def test_si_el_nucleo_deja_de_responder_la_pantalla_se_libera(self) -> None:
+        self.abrir_calibracion()
+        self.publicar_cal(en_curso=True)
+        self.avanzar(2.0)
+        self.publicando = False
+        self.avanzar(self.ui.max_edad_s + 3.0)
+        self.assertEqual(self.enlace.enviadas.count("tsw 255,1"), 1)
+
+    def test_si_se_reinicia_la_interfaz_con_una_calibracion_en_curso_vuelve_a_su_pagina(self) -> None:
+        self.publicar_cal(en_curso=True)
+        self.arrancar_en_principal()
+        self.avanzar(1.5)
+        self.assertEqual(self.enlace.enviadas.count("page calibracion"), 1)
+
+    def test_suena_la_voz_calibrando_y_la_alarma_del_otro_sensor_tiene_prioridad(self) -> None:
+        self.abrir_calibracion()
+        self.publicar_cal(en_curso=True)
+        self.avanzar(7.0)
+        self.assertGreaterEqual(self.enlace.enviadas.count("play 0,2,0"), 2)       # se repite
+        self.assertNotIn("play 0,1,0", self.enlace.enviadas)
+        est = estado(s2=("95.0", "ALTA", False), sonar=True)
+        est["calibracion"] = calibracion_publicada(en_curso=True)
+        self.publicar(est)
+        self.avanzar(4.0)
+        self.assertIn("play 0,1,0", self.enlace.enviadas)
 
 
 if __name__ == "__main__":

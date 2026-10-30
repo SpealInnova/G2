@@ -24,6 +24,11 @@ def principal(est, **kw):
 
 
 class PruebasColores(unittest.TestCase):
+    def test_calibrando_usa_su_color_y_la_principal_lo_pinta(self) -> None:
+        self.assertEqual(V.colores_estado("CALIBRANDO", False, True), (C["calibrando"], C["blanco"]))
+        v = principal(estado(s1=("35.2", "CALIBRANDO", False)))
+        self.assertEqual((v["principal.est_1.txt"], v["principal.est_1.bco"]), ("CALIBRANDO", C["calibrando"]))
+
     def test_normal_es_verde_con_texto_blanco(self) -> None:
         self.assertEqual(V.colores_estado("NORMAL", False, True), (C["normal"], C["blanco"]))
 
@@ -188,6 +193,69 @@ class PruebasDeteccionDeVelocidad(unittest.TestCase):
 
         self.assertIsNone(detectar_baudios("/dev/x", (115200, 9600), probar))
 
+
+
+class PruebasVistaCalibracion(unittest.TestCase):
+    SENSORES = [{"id": 1, "habilitado": 1}, {"id": 2, "habilitado": 0}]
+
+    def vista(self, **kw):
+        base = dict(sensores=self.SENSORES, vivos=[{"id": 1, "texto_o2": "20.9"}], calibraciones={}, elegido=1, referencia=0.0,
+                    calibracion=None, en_curso=False, resultado=None)
+        base.update(kw)
+        return V.vista_calibracion(**base)
+
+    def test_reposo_muestra_cada_sensor_el_gas_y_el_punto(self) -> None:
+        v = self.vista()
+        self.assertEqual(v["calibracion.v_s1.txt"], "Sensor 1  20.9 %")
+        self.assertEqual(v["calibracion.v_s2.txt"], "Sensor 2  APAGADO")
+        self.assertEqual((v["calibracion.v_s1.pco"], v["calibracion.v_s2.pco"]), (C["texto"], C["inactivo"]))
+        self.assertEqual(v["calibracion.v_gas.txt"], "Gas: 0.0 %")
+        self.assertIn("punto bajo (corrige el cero)", v["calibracion.i1.txt"])
+        self.assertIn("punto alto (corrige la ganancia)", self.vista(referencia=98.0)["calibracion.i1.txt"])
+        self.assertEqual(v["calibracion.barra.val"], 0)
+        for linea in ("i1", "i2", "i3"):
+            self.assertLessEqual(len(v[f"calibracion.{linea}.txt"]), 60)
+
+    def test_el_sensor_y_el_gas_elegidos_se_marcan(self) -> None:
+        v = self.vista(elegido=2, referencia=20.9)
+        self.assertEqual((v["calibracion.v_s1.bco"], v["calibracion.v_s2.bco"]), (C["boton"], C["boton_pulsado"]))
+        self.assertEqual((v["calibracion.b_bajo.bco"], v["calibracion.b_aire.bco"]), (C["boton"], C["boton_pulsado"]))
+        self.assertEqual(self.vista(referencia=0.0)["calibracion.b_bajo.bco"], C["boton_pulsado"])
+        self.assertEqual(self.vista(referencia=99.8)["calibracion.b_aire.bco"], C["boton"])
+
+    def test_formato_del_gas(self) -> None:
+        self.assertEqual([V.formato_gas(x) for x in (0.0, 20.9, 98.0, 99.8, 99.95, 100.0)],
+                         ["0.0", "20.9", "98.0", "99.8", "99.95", "100.0"])
+
+    def test_la_calibracion_vigente_en_una_linea(self) -> None:
+        c = {1: {"offset_pct": -0.2, "ganancia": 1.005, "bajo_ref_pct": 0.0, "alto_ref_pct": 98.0}}
+        self.assertEqual(self.vista(calibraciones=c)["calibracion.i2.txt"], "Vigente: gan. 1.005  cero -0.20 %  bajo 0  alto 98")
+        solo_bajo = {1: {"offset_pct": -0.5, "ganancia": None, "bajo_ref_pct": 20.9, "alto_ref_pct": None}}
+        self.assertEqual(self.vista(calibraciones=solo_bajo)["calibracion.i2.txt"], "Vigente: gan. 1.000  cero -0.50 %  bajo 20.9  alto --")
+        self.assertEqual(self.vista()["calibracion.i2.txt"], "Vigente: de fábrica (sin calibrar)")
+
+    def test_un_sensor_no_dado_de_alta(self) -> None:
+        v = self.vista(sensores=self.SENSORES[:1])
+        self.assertEqual(v["calibracion.v_s2.txt"], "Sensor 2  SIN SENSOR")
+
+    def test_en_curso_sin_variacion_espera_y_la_barra_nunca_pasa_de_100(self) -> None:
+        cal = {"nombre": "Sensor 1", "referencia_pct": 98.0, "transcurrido_s": 900.0, "tope_s": 300.0, "variacion_pct": None}
+        v = self.vista(en_curso=True, calibracion=cal)
+        self.assertEqual(v["calibracion.i2.txt"], "Esperando una señal estable...")
+        self.assertEqual(v["calibracion.barra.val"], 100)
+        self.assertEqual(v["calibracion.b_iniciar.txt"], "Calibrando...")
+
+    def test_ningun_texto_pasa_del_largo_de_su_componente(self) -> None:
+        v = self.vista(resultado="x" * 200)
+        self.assertEqual(len(v["calibracion.res.txt"]), 80)
+        for n in (1, 2):
+            self.assertLessEqual(len(v[f"calibracion.v_s{n}.txt"]), 40)
+
+    def test_todo_el_texto_cabe_en_iso_8859_1(self) -> None:
+        v = self.vista(calibraciones={1: {"offset_pct": 0.1, "ganancia": 1.0, "bajo_ref_pct": 0.0, "alto_ref_pct": 98.0}})
+        for clave, valor in v.items():
+            if isinstance(valor, str):
+                valor.encode("iso-8859-1")
 
 
 if __name__ == "__main__":

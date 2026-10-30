@@ -55,6 +55,20 @@ _LISTA = [
     _c("plataforma.intervalo_visualizacion_s", "entero", 15,
        "Cada cuanto la plataforma web muestra datos nuevos de este equipo.", "s", 1, 3600),
 
+    # --- Enlace con la plataforma (g2-uplink, D-046) ------------------------------------------------------
+    _c("plataforma.activa", "booleano", 0,
+       "Si el equipo envia sus datos a la plataforma. Apagado por omision: se enciende al instalar, cuando la "
+       "plataforma ya tiene dado de alta el equipo y se guardo su secreto.", editable_por=SOLO_LOCAL),
+    _c("plataforma.url", "texto", "https://sp-peek.com",
+       "Direccion de la plataforma. Solo https (http unicamente hacia el propio equipo, para pruebas).",
+       editable_por=SOLO_LOCAL),
+    _c("plataforma.intervalo_envio_s", "entero", 30,
+       "Cada cuanto se envian a la plataforma los registros nuevos (si hay muchos pendientes se sigue sin esperar).",
+       "s", 5, 3600, editable_por=frozenset({"plataforma", "local"})),
+    _c("plataforma.lote_max", "entero", 500,
+       "Registros que van como maximo en cada envio a la plataforma.", "registros", 10, 2000,
+       editable_por=frozenset({"plataforma", "local"})),
+
     # --- Alarmas de oxigeno (D-027): configurables por pantalla y plataforma ---------------------
     _c("alarma.o2_bajo_pct", "real", 20.0,
        "Alarma de oxigeno bajo: se activa cuando el oxigeno es menor que este valor.",
@@ -82,6 +96,11 @@ _LISTA = [
     _c("pantalla.grafica_espera_s", "entero", 10,
        "Segundos sin tocar la pantalla principal para que aparezca la grafica de los dos sensores (0 = nunca).",
        "s", 0, 3600, editable_por=frozenset({"plataforma", "local"})),
+
+    # --- Reportes (D-044) -----------------------------------------------------------------------------------
+    _c("reporte.zona_horaria", "texto", "America/Bogota",
+       "Zona horaria en la que se cuentan los dias y se escriben las horas de los reportes.",
+       editable_por=frozenset({"plataforma", "local"})),
 
     # --- PIN de la pantalla (D-038): no se pueden cambiar desde la propia pantalla -----------------
     _c("pantalla.pin_vigencia_s", "entero", 300,

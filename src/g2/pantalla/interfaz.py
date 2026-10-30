@@ -27,7 +27,11 @@ Esta clase hace todo lo demas:
     pagina ``grafica`` con las dos senales; un toque la cierra. Si salta una alarma sin acusar o el nucleo deja de responder, vuelve
     sola a ``principal`` para que se vea el aviso. Toda esta logica es de la Pi: la pantalla solo dibuja lo que se le manda.
 
-Pendiente (siguientes etapas): las paginas reportes y calibracion.
+  * **Reportes** (D-044): el rango de fechas (dias completos, maximo una semana) se escribe con el teclado numerico, hay un boton
+    para el reporte de hoy, y la memoria USB debe llamarse igual que el equipo. Pide PIN. El reporte lo hace el nucleo en un
+    proceso aparte; esta pagina solo muestra su avance y resultado.
+
+Pendiente (siguientes etapas): la pagina calibracion.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import logging
 import threading
 import time
 from collections import deque
+from datetime import date
 from typing import Callable, Protocol
 
 from g2.configuracion import catalogo
@@ -48,11 +53,12 @@ from g2.pantalla import vistas
 from g2.pantalla.protocolo import (CodigoResultado, DatosRecibidos, Evento, ListoParaDatos, PaginaCargada,
                                    PantallaEncendida, RespuestaNumero, TocarPantalla, Toque)
 from g2.red.gestor import ErrorRed, validar_credenciales
+from g2.reportes import rango as rango_reporte
 from g2.seguridad import pin as seguridad_pin
 
 REGISTRO = logging.getLogger("g2.pantalla")
 
-PAGINAS_EN_CONSTRUCCION = ("b_calib",)
+PAGINAS_EN_CONSTRUCCION: tuple[str, ...] = ()
 MENSAJE_EN_CONSTRUCCION = "Página en construcción"
 CONTROLES_DEL_TECLADO = set(tec.DIGITOS) | {"k_punto", "k_signo", "b_borrar", "b_limpiar"}
 DURACION_RESULTADO_S = 20.0
@@ -66,6 +72,10 @@ ESPERA_BLOQUE_S = 4.0                    # lo que se espera la respuesta de la p
 ESPERA_CAMBIO_GRAFICA_S = 3.0            # tras abrir o cerrar la grafica por su cuenta, no se vuelve a pedir antes de esto
 RECHAZOS_PARA_DESACTIVAR_GRAFICA = 3     # ordenes de la grafica rechazadas por la pantalla antes de desactivarla
 ESPERA_CARGA_S = 2.0                     # tras ordenar una pagina, lo que se espera su aviso de carga sin pintar la anterior
+USB_CADA_S = 3.0                         # cada cuanto se revisa la memoria USB mientras se mira la pagina de reportes
+ESPERA_ORDEN_REPORTE_S = 6.0             # tras pedir un reporte, lo que se espera a que el nucleo lo acepte
+ESPERA_ORDEN_CALIBRACION_S = 6.0         # lo mismo para una calibracion
+REFERENCIA_AIRE = 20.9                   # el atajo `Aire` de la pagina de calibracion
 _SIN_VER = object()                       # marca: todavia no se ha visto el estado del cambio de red
 
 
@@ -85,6 +95,10 @@ class Datos(Protocol):
     def historial_alarmas(self, cantidad: int = 6) -> list[dict]: ...
     def cola_pendiente(self) -> int: ...
     def verificar_auditoria(self) -> tuple[bool, int]: ...
+    def zona_horaria(self) -> str: ...
+    def contar_registros(self, inicio_ms: int, fin_ms: int) -> int | None: ...
+    def estado_usb(self, nombre: str) -> tuple[str, bool]: ...
+    def calibraciones_vigentes(self) -> dict[int, dict]: ...
 
 
 def _en_hilo(tarea: Callable[[], None]) -> None:
@@ -103,11 +117,13 @@ class Interfaz:
                  hora: Callable[[], str] = lambda: time.strftime("%H:%M"),
                  red: Callable[[], str] = lambda: "SIN RED",
                  repetir_sonido_s: float = 3.0, max_edad_s: float = 5.0, mensaje_s: float = 3.0,
-                 segundo_plano: Callable[[Callable[[], None]], None] = _en_hilo) -> None:
+                 segundo_plano: Callable[[Callable[[], None]], None] = _en_hilo,
+                 hoy: Callable[[str], date] = rango_reporte.hoy) -> None:
         self.enlace, self.cliente, self.datos = enlace, cliente, datos
         self._reloj, self._hora, self._red = reloj, hora, red
         self.repetir_sonido_s, self.max_edad_s, self.mensaje_s = repetir_sonido_s, max_edad_s, mensaje_s
         self._segundo_plano = segundo_plano
+        self._hoy_en = hoy
         self._ultimas_ordenes: deque[str] = deque(maxlen=6)
         # ---- volumen y proteccion contra reinicios al sonar (D-041) ----
         self._volumen: int | None = None                         # volumen vigente (la proteccion puede bajarlo)
@@ -151,6 +167,25 @@ class Interfaz:
         self._resultado: tuple[str, bool, float, str] | None = None   # (texto, es_error, hasta cuando, en que pagina)
         self._auditoria_en_curso = False
         self._auditoria_resultado: tuple[bool, int] | None = None
+        # ---- reportes (D-044) ----
+        self._zona = "America/Bogota"                       # zona horaria de los reportes (la lee de la base)
+        self._rep_desde: date | None = None
+        self._rep_hasta: date | None = None
+        self._rep_registros: int | None = None                   # filas que traeria el rango elegido
+        self._rep_usb: tuple[str, bool] = ("Buscando la memoria USB...", False)
+        self._rep_usb_pedido = float("-inf")
+        self._rep_usb_en_curso = False
+        self._rep_en_curso = False                               # el nucleo esta generando un reporte
+        self._rep_visto: object = _SIN_VER                       # numero del ultimo resultado ya visto
+        self._rep_enviado = float("-inf")                        # cuando se pidio el ultimo reporte (hasta que el nucleo lo acepte)
+        self._toques_bloqueados = False                          # la pantalla de verdad ignora los toques de la pagina actual
+        # ---- calibracion de cero en aire (D-048) ----
+        self._calibraciones: dict[int, dict] = {}                # la calibracion vigente de cada sensor calibrado
+        self._cal_sensor = 1                                     # el sensor elegido en la pagina de calibracion (1 o 2)
+        self._cal_gas = 0.0                                      # la concentracion del gas patron elegida, en %
+        self._cal_en_curso = False                               # el nucleo esta calibrando un sensor
+        self._cal_visto: object = _SIN_VER                       # numero de la ultima calibracion ya vista
+        self._cal_enviado = float("-inf")                        # cuando se pidio la ultima (hasta que el nucleo la acepte)
         # ---- grafica en tiempo (D-043) ----
         self._hist = grafica.HistorialGrafica()
         self._t_muestra = float("-inf")
@@ -216,6 +251,7 @@ class Interfaz:
                 self._atribuir_reinicio_al_sonido(ahora)
             self._fijar_volumen()                            # el .HMI vuelve a poner el suyo al encender: la Pi lo corrige
             self.pagina, self._proto_pedido = None, False
+            self._toques_bloqueados = False                  # al reiniciarse vuelve con los toques habilitados
             self._soltar_teclado()
             self._soltar_texto()
             self._confirmacion = None
@@ -227,6 +263,7 @@ class Interfaz:
         elif isinstance(evento, PaginaCargada):
             REGISTRO.info("pagina cargada: %s", evento.pagina)
             self.pagina = evento.pagina
+            self._toques_bloqueados = False                  # una pagina recien cargada trae sus toques habilitados
             self._t_pagina_pedida = float("-inf")
             if evento.pagina != "teclado":
                 self._soltar_teclado()                       # se salio del teclado por otra via
@@ -300,6 +337,9 @@ class Interfaz:
         self._entrada, self._tras_pin = None, None
 
     def _toque(self, toque: Toque) -> None:
+        if self._pantalla_bloqueada():
+            REGISTRO.info("toque ignorado (pantalla bloqueada): %s.%s", toque.pagina, toque.control)
+            return
         REGISTRO.info("toque: %s.%s", toque.pagina, toque.control)
         self._ultimo_toque = self._reloj()
         pagina, control = toque.pagina, toque.control
@@ -322,6 +362,10 @@ class Interfaz:
             self._toque_texto(control)
         elif pagina == "sistema":
             self._toque_sistema(control)
+        elif pagina == "reportes":
+            self._toque_reportes(control)
+        elif pagina == "calibracion":
+            self._toque_calibracion(control)
         elif pagina == "teclado":
             self._toque_teclado(control)
         elif pagina == "confirmar":
@@ -330,7 +374,8 @@ class Interfaz:
             REGISTRO.debug("toque sin accion: %s.%s", pagina, control)
 
     def _toque_principal(self, control: str) -> None:
-        destinos = {"b_alarmas": "alarmas", "b_config": "config", "b_sistema": "sistema", "b_red": "red"}
+        destinos = {"b_alarmas": "alarmas", "b_config": "config", "b_sistema": "sistema", "b_red": "red",
+                    "b_calib": "calibracion"}
         if control in destinos:
             self._tx(P.orden_pagina(destinos[control]))
         elif control == "b_acuse":
@@ -372,7 +417,7 @@ class Interfaz:
         if control == "b_volver":
             self._tx(P.orden_pagina("principal"))
         elif control == "b_reportes":
-            self._poner_resultado("Reportes: próxima etapa")
+            self._abrir_reportes()
         elif control == "b_servicios":
             self._requerir_pin(lambda: self._confirmar(
                 "¿Reiniciar los servicios?", "La medición y la pantalla se interrumpen unos segundos.",
@@ -426,6 +471,242 @@ class Interfaz:
         else:
             self._poner_resultado(f"AUDITORÍA ALTERADA: {diferencias} diferencia(s)", error=True)
         REGISTRO.info("auditoria verificada: %s (%d diferencias)", "integra" if correcta else "NO integra", diferencias)
+
+    # ------------------------------------------------------------------ reportes (D-044)
+    def _hoy(self) -> date:
+        """El dia de hoy en la zona de los reportes (si la zona guardada no es valida, la de Colombia)."""
+        try:
+            return self._hoy_en(self._zona)
+        except rango_reporte.ErrorRango:
+            return self._hoy_en("America/Bogota")
+
+    def _abrir_reportes(self) -> None:
+        """Abre la pagina de reportes con el rango en el dia de hoy."""
+        self._rep_desde = self._rep_hasta = self._hoy()
+        self._rep_registros, self._rep_usb_pedido = None, float("-inf")
+        self._t_datos = float("-inf")
+        self._tx(P.orden_pagina("reportes"))
+
+    def _toque_reportes(self, control: str) -> None:
+        if control == "b_volver":
+            self._tx(P.orden_pagina("sistema"))
+        elif control in ("v_desde", "v_hasta"):
+            self._editar_fecha(control[2:])
+        elif control == "b_hoy":
+            hoy = self._hoy()
+            self._rep_desde = self._rep_hasta = hoy
+            self._iniciar_reporte(hoy, hoy)
+        elif control == "b_generar":
+            if self._rep_desde is not None and self._rep_hasta is not None:
+                self._iniciar_reporte(self._rep_desde, self._rep_hasta)
+
+    def _editar_fecha(self, cual: str) -> None:
+        """Abre el teclado numerico para escribir la fecha inicial o final (no pide PIN: solo elige el rango)."""
+        actual = self._rep_desde if cual == "desde" else self._rep_hasta
+        self._regreso = "reportes"
+        self._entrada = tec.Entrada("fecha", cual)
+        self._aviso_teclado = (f"Actual: {rango_reporte.formato_fecha(actual or self._hoy())}. Escriba 8 dígitos (DDMMAAAA)", False)
+        self._tx(P.orden_pagina("teclado"))
+
+    def _aceptar_fecha(self, entrada: tec.Entrada) -> None:
+        dia, motivo = tec.validar_fecha(entrada.buffer, self._hoy())
+        if dia is None:
+            self._aviso_teclado = (motivo, True)
+            return
+        if entrada.clave == "desde":
+            self._rep_desde = dia
+        else:
+            self._rep_hasta = dia
+        self._entrada, self._rep_registros, self._t_datos = None, None, float("-inf")
+        self._tx(P.orden_pagina("reportes"))
+
+    def _iniciar_reporte(self, desde: date, hasta: date) -> None:
+        """Comprueba todo lo que la pantalla puede comprobar (para no pedir el PIN en balde) y pide el PIN para generar."""
+        def aviso(texto: str) -> None:
+            self._poner_resultado(texto, error=True, segundos=8, pagina="reportes")
+
+        if self._rep_en_curso:
+            aviso("Ya hay un reporte en curso")
+            return
+        try:
+            rango_reporte.validar(desde, hasta, self._hoy())
+        except rango_reporte.ErrorRango as error:
+            aviso(str(error))
+            return
+        if not self._equipo.get("equipo.nombre"):
+            aviso("Defina el nombre del equipo (es la contraseña del reporte)")
+            return
+        if not self._rep_usb[1]:
+            aviso(self._rep_usb[0])
+            return
+        self._requerir_pin(lambda: self._enviar_reporte(desde, hasta), "reportes")
+
+    def _enviar_reporte(self, desde: date, hasta: date) -> None:
+        identificador = self.cliente.enviar_orden("reporte_generar", actor="pantalla", desde=desde.isoformat(),
+                                                  hasta=hasta.isoformat())
+        REGISTRO.info("reporte pedido al nucleo: %s a %s (orden %s)", desde, hasta, identificador)
+        self._rep_enviado = self._reloj()
+        self._poner_resultado("Iniciando el reporte...", segundos=ESPERA_ORDEN_REPORTE_S, pagina="reportes")
+        self._ir("reportes")
+
+    def _calibrando(self) -> bool:
+        """El nucleo calibra un sensor (o acaba de recibir la orden)."""
+        return self._cal_en_curso or self._cal_enviado > float("-inf")
+
+    def _pantalla_bloqueada(self) -> bool:
+        """Mientras el equipo genera un reporte o calibra un sensor (o acaba de recibir la orden) la pantalla no atiende NINGUN
+        toque: nadie puede salir de la pagina, cambiar las fechas ni pedir otra cosa, y asi nada interrumpe el proceso ni se
+        manipula a medias. Se deduce del estado del nucleo: si este deja de responder, la pantalla se libera sola (no puede
+        quedar bloqueada)."""
+        return self._rep_en_curso or self._rep_enviado > float("-inf") or self._calibrando()
+
+    def _aplicar_bloqueo(self, ahora: float) -> None:
+        """Hace que la pantalla de verdad ignore los toques (``tsw 255,0``) y no salga de la pagina de reportes. Los toques
+        tambien se descartan en la Pi (``_toque``): esto es el aviso visible y la segunda barrera. Una pagina nueva trae los
+        toques habilitados, asi que la orden se repite cada vez que carga una."""
+        bloqueada = self._pantalla_bloqueada()
+        destino = "calibracion" if self._calibrando() else "reportes"
+        cargada = self.pagina is not None and ahora - self._t_pagina_pedida >= ESPERA_CARGA_S
+        if bloqueada and self.pagina not in (None, destino) and cargada:
+            if destino == "reportes" and (self._rep_desde is None or self._rep_hasta is None):   # se reinicio la interfaz con un reporte en curso
+                self._rep_desde = self._rep_hasta = self._hoy()
+            self._tx(P.orden_pagina(destino))
+        elif bloqueada and not self._toques_bloqueados and cargada and self.pagina == destino:
+            self._tx(P.ORDEN_BLOQUEAR_TOQUES)
+            self._toques_bloqueados = True
+        elif not bloqueada and self._toques_bloqueados:
+            self._tx(P.ORDEN_DESBLOQUEAR_TOQUES)
+            self._toques_bloqueados = False
+
+    def _leer_usb(self, nombre: str) -> None:
+        """Revisa la memoria USB (puede tardar: corre en segundo plano)."""
+        try:
+            self._rep_usb = self.datos.estado_usb(nombre)
+        except Exception:                                        # nada debe dejar la revision colgada
+            REGISTRO.exception("no se pudo revisar la memoria USB")
+            self._rep_usb = ("No se pudo revisar la memoria USB", False)
+        finally:
+            self._rep_usb_en_curso = False
+
+    def _leer_reporte(self, ahora: float, estado: dict | None) -> None:
+        """Toma del estado del nucleo si hay un reporte en curso y el resultado del ultimo. El resultado solo se muestra si
+        aparece MIENTRAS se mira (el de antes de arrancar esta interfaz es viejo y se ignora)."""
+        reporte = (estado or {}).get("reporte")
+        self._rep_en_curso = bool(reporte and reporte.get("en_curso"))
+        if self._rep_en_curso:
+            self._rep_enviado = float("-inf")
+        if reporte is None:
+            return
+        ultimo = reporte.get("ultimo")
+        numero = ultimo["numero"] if ultimo else None
+        if numero != self._rep_visto:
+            if self._rep_visto is not _SIN_VER and ultimo is not None:
+                self._rep_enviado = float("-inf")
+                if ultimo["ok"]:
+                    texto = (f"Listo: {ultimo.get('filas', '?')} filas, {ultimo.get('paginas', '?')} págs. "
+                             f"Huella {str(ultimo.get('sha256', ''))[:12]}")
+                    if not ultimo.get("desmontada", True):
+                        texto += " (retire la USB con cuidado)"
+                    self._poner_resultado(texto, segundos=120, pagina="reportes")
+                else:
+                    self._poner_resultado(ultimo["mensaje"], error=not ultimo.get("cancelado"), segundos=120,
+                                          pagina="reportes")
+            self._rep_visto = numero
+        elif (self._rep_enviado > float("-inf") and not self._rep_en_curso
+              and ahora - self._rep_enviado > ESPERA_ORDEN_REPORTE_S):
+            self._rep_enviado = float("-inf")
+            self._poner_resultado("El equipo no aceptó el reporte", error=True, segundos=20, pagina="reportes")
+
+    # ------------------------------------------------------------------ calibracion por puntos (D-048, D-049)
+    def _toque_calibracion(self, control: str) -> None:
+        if control == "b_volver":
+            self._tx(P.orden_pagina("principal"))
+        elif control in ("v_s1", "v_s2"):
+            self._cal_sensor = int(control[-1])
+            self._t_refresco = float("-inf")
+        elif control in ("b_bajo", "b_aire"):
+            self._cal_gas = 0.0 if control == "b_bajo" else REFERENCIA_AIRE
+            self._t_refresco = float("-inf")
+        elif control == "v_gas":
+            self._editar_gas()
+        elif control == "b_iniciar":
+            self._iniciar_calibracion()
+
+    def _editar_gas(self) -> None:
+        """Abre el teclado numerico para escribir la concentracion del gas patron (no pide PIN: el PIN se pide al calibrar)."""
+        self._regreso = "calibracion"
+        self._entrada = tec.Entrada("gas")
+        self._aviso_teclado = (f"Actual: {vistas.formato_gas(self._cal_gas)} %. Entre 0 y 100 %", False)
+        self._tx(P.orden_pagina("teclado"))
+
+    def _aceptar_gas(self, entrada: tec.Entrada) -> None:
+        valor, motivo = tec.validar_gas(entrada.buffer)
+        if valor is None:
+            self._aviso_teclado = (motivo, True)
+            return
+        self._cal_gas, self._entrada = valor, None
+        self._tx(P.orden_pagina("calibracion"))
+
+    def _iniciar_calibracion(self) -> None:
+        """Comprueba lo que la pantalla puede comprobar (para no pedir el PIN en balde) y pide PIN y confirmacion."""
+        def aviso(texto: str) -> None:
+            self._poner_resultado(texto, error=True, segundos=8, pagina="calibracion")
+
+        n, gas = self._cal_sensor, self._cal_gas
+        if n > len(self._sensores) or not self._sensores[n - 1]["habilitado"]:
+            aviso(f"El Sensor {n} no está activo")
+            return
+        if not any(s["habilitado"] for i, s in enumerate(self._sensores) if i != n - 1):
+            aviso("Encienda el otro sensor: debe seguir vigilando")
+            return
+        sensor_id = self._sensores[n - 1]["id"]
+        punto = "alto" if gas >= 50.0 else "bajo"
+        self._requerir_pin(lambda: self._confirmar(
+            f"¿Calibrar el Sensor {n} con gas de {vistas.formato_gas(gas)} %?",
+            f"Punto {punto}. El sensor debe tener ese gas ahora. Sus alarmas se suspenden y la pantalla se bloquea.",
+            lambda: self._enviar_calibracion(sensor_id, gas), "calibracion"), "calibracion")
+
+    def _enviar_calibracion(self, sensor_id: int, gas: float) -> None:
+        identificador = self.cliente.enviar_orden("calibrar_punto", actor="pantalla", sensor_id=sensor_id, referencia_pct=gas)
+        REGISTRO.info("calibracion del sensor %d con gas de %g %% pedida al nucleo (orden %s)", sensor_id, gas, identificador)
+        self._cal_enviado = self._reloj()
+        self._poner_resultado("Iniciando la calibración...", segundos=ESPERA_ORDEN_CALIBRACION_S, pagina="calibracion")
+
+    def _leer_calibracion(self, ahora: float, estado: dict | None) -> None:
+        """Toma del estado del nucleo si hay una calibracion en curso y el resultado de la ultima (solo el de las que terminan
+        MIENTRAS se mira: lo anterior a esta interfaz es viejo y se ignora)."""
+        cal = (estado or {}).get("calibracion")
+        self._cal_en_curso = bool(cal and cal.get("en_curso"))
+        if self._cal_en_curso:
+            self._cal_enviado = float("-inf")
+        if cal is None:
+            return
+        ultima = cal.get("ultima")
+        numero = ultima["numero"] if ultima else None
+        if numero != self._cal_visto:
+            if self._cal_visto is not _SIN_VER and ultima is not None:
+                self._cal_enviado = float("-inf")
+                self._poner_resultado(f"{ultima['nombre']}: {ultima['mensaje']}",
+                                      error=not ultima["ok"] and not ultima.get("cancelada"), segundos=120, pagina="calibracion")
+            self._cal_visto = numero
+        elif (self._cal_enviado > float("-inf") and not self._cal_en_curso
+              and ahora - self._cal_enviado > ESPERA_ORDEN_CALIBRACION_S):
+            self._cal_enviado = float("-inf")
+            self._poner_resultado("El equipo no aceptó la calibración", error=True, segundos=20, pagina="calibracion")
+
+    def _informacion_del_rango(self) -> tuple[str, bool]:
+        """La linea ``i2``: cuantos dias y registros cubre el rango elegido, o por que no sirve (en rojo)."""
+        try:
+            dias = rango_reporte.validar(self._rep_desde, self._rep_hasta, self._hoy())     # type: ignore[arg-type]
+        except rango_reporte.ErrorRango as error:
+            return str(error), True
+        if self._rep_registros is None:
+            return f"{dias} día(s)", False
+        if self._rep_registros == 0:
+            return "Sin registros en esas fechas", True
+        if self._rep_registros > rango_reporte.MAX_FILAS:
+            return "Demasiados registros: elija menos días", True
+        return f"{dias} día(s) · {self._rep_registros} registros por sensor", False
 
     # ------------------------------------------------------------------ red (D-040)
     def _toque_red(self, control: str) -> None:
@@ -599,6 +880,10 @@ class Interfaz:
         assert entrada is not None
         if entrada.modo == "pin":
             self._aceptar_pin(entrada, ahora)
+        elif entrada.modo == "fecha":
+            self._aceptar_fecha(entrada)
+        elif entrada.modo == "gas":
+            self._aceptar_gas(entrada)
         else:
             self._aceptar_valor(entrada, ahora)
         self._t_refresco = float("-inf")
@@ -669,6 +954,11 @@ class Interfaz:
             mensaje, error = self._aviso_teclado
         if entrada.modo == "pin":
             titulo, rotulo = "Ingrese el PIN", "PIN"
+        elif entrada.modo == "gas":
+            titulo, rotulo = "Gas patrón", "Concentración de O2 (%)"
+        elif entrada.modo == "fecha":
+            titulo = "Fecha del reporte"
+            rotulo = "Desde (día/mes/año)" if entrada.clave == "desde" else "Hasta (día/mes/año)"
         else:
             titulo, rotulo = "Ajustar", tec.ROTULOS[entrada.clave]
         return vistas.vista_teclado(titulo=titulo, rotulo=rotulo, valor=entrada.mostrar(),
@@ -682,6 +972,15 @@ class Interfaz:
         self._cola, self._red_texto = self.datos.cola_pendiente(), self._red()
         self._sensores = self.datos.sensores()
         self._equipo = self.datos.datos_del_equipo()
+        self._calibraciones = self.datos.calibraciones_vigentes()
+        self._zona = self.datos.zona_horaria()
+        if self.pagina == "reportes" and self._rep_desde is not None and self._rep_hasta is not None:
+            try:
+                rango_reporte.validar(self._rep_desde, self._rep_hasta, self._hoy())
+                self._rep_registros = self.datos.contar_registros(
+                    *rango_reporte.limites_ms(self._rep_desde, self._rep_hasta, self._zona))
+            except rango_reporte.ErrorRango:
+                self._rep_registros = None
         activo = self.datos.pin_activo()
         self._pin_tipo = activo["tipo"] if activo else None
 
@@ -695,6 +994,14 @@ class Interfaz:
             self._leer_datos(ahora)
         self._atender_auditoria()
         self._leer_red(estado if responde else None)
+        self._leer_reporte(ahora, estado if responde else None)
+        self._leer_calibracion(ahora, estado if responde else None)
+        self._aplicar_bloqueo(ahora)
+        if (self.pagina == "reportes" and not self._rep_en_curso and not self._rep_usb_en_curso
+                and ahora - self._rep_usb_pedido >= USB_CADA_S):
+            self._rep_usb_pedido, self._rep_usb_en_curso = ahora, True
+            nombre = self._equipo.get("equipo.nombre", "")
+            self._segundo_plano(lambda: self._leer_usb(nombre))
         mensaje = None
         if self._mensaje is not None:
             if ahora < self._mensaje[1]:
@@ -724,6 +1031,22 @@ class Interfaz:
             red = (estado or {}).get("red") if responde else None
             vista = vistas.vista_red(self._red_info, self._redes, (red or {}).get("cambio"), nucleo_responde=responde,
                                      resultado=resultado, resultado_es_error=resultado_error)
+        elif self.pagina == "reportes" and self._rep_desde is not None and self._rep_hasta is not None:
+            reporte = ((estado or {}).get("reporte") or {}) if responde else {}
+            informacion, informacion_error = self._informacion_del_rango()
+            vista = vistas.vista_reportes(
+                desde=rango_reporte.formato_fecha(self._rep_desde), hasta=rango_reporte.formato_fecha(self._rep_hasta),
+                informacion=informacion, informacion_es_error=informacion_error,
+                usb_texto=self._rep_usb[0], usb_lista=self._rep_usb[1], en_curso=self._pantalla_bloqueada(),
+                progreso=int(reporte.get("progreso", 0)) if self._rep_en_curso else 0,
+                avance=str(reporte.get("mensaje", "")) if self._rep_en_curso else "Iniciando el reporte...",
+                resultado=resultado, resultado_es_error=resultado_error)
+        elif self.pagina == "calibracion":
+            vista = vistas.vista_calibracion(
+                sensores=self._sensores, vivos=(estado or {}).get("sensores", []) if responde else [],
+                calibraciones=self._calibraciones, elegido=self._cal_sensor, referencia=self._cal_gas,
+                calibracion=(estado or {}).get("calibracion") if responde else None, en_curso=self._calibrando(),
+                resultado=resultado, resultado_es_error=resultado_error)
         elif self.pagina == "texto":
             vista = self._vista_texto()
         elif self.pagina == "confirmar" and self._confirmacion is not None:
@@ -742,6 +1065,10 @@ class Interfaz:
                 and ahora >= self._sonido_callado_hasta):
             self._t_sonido = self._t_play = ahora
             self._tx(P.ORDEN_SONIDO_ALARMA)       # la repite la Pi: si se detiene, deja de sonar
+        elif (responde and self._cal_en_curso and ahora - self._t_sonido >= self.repetir_sonido_s
+              and ahora >= self._sonido_callado_hasta):
+            self._t_sonido = self._t_play = ahora      # una alarma del otro sensor tiene prioridad (la rama de arriba)
+            self._tx(P.ORDEN_SONIDO_CALIBRANDO)       # la voz «Calibrando», mientras dure
 
     # ------------------------------------------------------------------ grafica en tiempo (D-043)
     def _muestrear(self, ahora: float, estado: dict | None) -> None:

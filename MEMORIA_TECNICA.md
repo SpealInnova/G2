@@ -1650,6 +1650,279 @@ descartadas, consecuencias, fuente.
 
 ---
 
+## D-044 — Reportes en PDF cifrado a memoria USB
+
+- **Fecha:** 2026-10-27
+- **Qué se pidió:** exportar las lecturas en **PDF** con el número de registro de la base, la fecha y la hora de cada lectura y la lectura
+  de los dos sensores; los datos con alerta, **en rojo y negrita** con los parámetros de ese momento; el PDF debe **abrirse con una
+  contraseña que es el nombre del dispositivo**.
+- **Decisiones del usuario:** (1) la discrepancia entre sensores **no** se marca; (2) filtro por **fechas** (días completos, sin horas) y un
+  botón para imprimir **el día de hoy**; (3) **máximo una semana** por reporte, para no exigir demasiado a la Raspberry Pi; (4) la memoria
+  USB debe **llamarse igual que el equipo** (un seguro más); (5) se respeta el **intervalo de guardado** que haya en la base en cada
+  momento (si se cambió, el reporte lo refleja) y se usa la fecha y hora guardadas con cada dato; (6) el nombre del equipo tiene el formato
+  `ANZD-600226001` (ANZ analizador, D duplex, número del código de entrega); mientras no se defina el real se usó uno temporal
+  (`ANZD-000000001` en esta Pi); (7) primero los reportes y después la calibración.
+- **Hallazgos en los datos reales (antes de diseñar):** la base guarda **una fila por sensor** en cada intervalo y sus horas difieren
+  de 1 a 47 ms (solo 304 de 8 704 coinciden exactas), así que el reporte **empareja por cercanía** (menos de la mitad del intervalo de
+  la fila), no por igualdad ni por un intervalo fijo de 15 s. `lectura.periodo_ms` es el tiempo real transcurrido (a veces 15,4 s), por
+  eso el resumen muestra el intervalo dominante.
+- **Medidas en la Raspberry Pi 3 B+:** dibujar con `reportlab` directamente sobre el lienzo (sin armar tablas): 5 760 filas = 105 páginas en 3 s;
+  50 000 filas = 910 páginas en 27 s, 49 MB de memoria. Cifrar con `pypdf` AES-256 un PDF de 728 páginas: 3 s. Una semana a 15 s son
+  ~40 000 filas (~730 páginas) y tarda ~25 s. Con 6 291 filas reales: 113 páginas en 10,9 s.
+- **Cifrado:** `reportlab` solo cifra con RC4 (obsoleto) salvo que tenga `pyaes` (AES en Python puro, lento). Se dibuja con `reportlab` y se cifra
+  después con `pypdf` + `cryptography` (ya instalada): **AES-256**. Contraseña para abrir = nombre del equipo; contraseña de propietario
+  aleatoria y descartada (se puede ver, imprimir y copiar el texto; no editar: ver «Ajustes 2» abajo). Tras cifrar se comprueba que abre con la contraseña y que **no** abre
+  sin ella. El PDF sin cifrar vive solo en una carpeta temporal privada y se borra. **Límite honesto:** el nombre del equipo también se ve en la
+  pantalla `config`, así que esto protege contra una apertura casual, no es un secreto fuerte; por eso el nombre del archivo no lo lleva
+  (`G2_reporte_AAAA-MM-DD_a_AAAA-MM-DD_AAAAMMDD-HHMM.pdf`). Si el equipo no tiene nombre, **no se genera**.
+- **Qué marca como alerta:** una lectura es alerta si **durante su intervalo** hubo una alarma de oxígeno BAJO o ALTO de ese sensor
+  (`alarma.inicio_ms` .. `fin_ms`). El umbral que se imprime es `alarma.umbral`, el que tenía al dispararse, no el de hoy (que puede haber
+  cambiado). En rojo y negrita: número de registro, fecha, hora, descripción de la alerta y la lectura del sensor en alerta (la del otro, no).
+- **Contenido:** hoja de resumen (equipo, ID, rango, intervalo de guardado, estadísticas por sensor, alertas, calibraciones vigentes y
+  **estado de la cadena de auditoría** al generarlo: si está alterada lo dice en rojo, pero igual genera el reporte), tabla de lecturas con
+  `Página X de Y` (se conoce el total antes de dibujar), y al final las alarmas de oxígeno del rango. Lecturas con calidad
+  no normal llevan `*`; las de hora sin sincronizar, `†`; un sensor sin lectura, `—`. Zona horaria: clave `reporte.zona_horaria`
+  (**`America/Bogota`**, Colombia, UTC-5 todo el año; ver «Ajustes del 2026-10-27»).
+- **Cómo corre (D-005 intacto):** el reporte lo hace un **proceso aparte** (`python3 -m g2.reportes`, prioridad baja `nice 15`) que lanza
+  `g2-core` (`nucleo/servicio_reportes.py`): los hilos de Python comparten el GIL y dibujar cientos de páginas le quitaría tiempo a la lectura de
+  los sensores y al latido del watchdog. El proceso lee la base en solo lectura y toma de ella el nombre del equipo (la contraseña **nunca** viaja
+  por la línea de comandos); informa su avance con líneas JSON. El núcleo es el único que escribe: al terminar registra el evento
+  `REPORTE_GENERADO` (con la huella SHA-256 del archivo), `REPORTE_FALLIDO` o `REPORTE_CANCELADO` (migración 008) y cierra el comando. Solo un
+  reporte a la vez, máximo 15 min y se mata al cerrar el núcleo. Las órdenes son `reporte_generar` (desde, hasta) y `reporte_cancelar`.
+- **Límites:** `MAX_DIAS = 7` y `MAX_FILAS = 60 000` (si el intervalo de guardado se bajara a 1 s, una semana serían 600 000 filas: se rechaza
+  antes de armar nada). Fechas futuras, rango invertido y fechas inexistentes se rechazan en la pantalla **y** en el núcleo.
+- **Memoria USB:** `reportes/usb.py` (todo lo del sistema pasa por un ejecutor que se sustituye en las pruebas). Solo cuenta el transporte `usb`;
+  **hallazgo en la Pi real: la tarjeta SD (`bootfs`, `rootfs`) se declara «extraíble» y salía como memoria USB** (se vio al probar la orden de
+  verdad), por eso no se usa `rm` ni `hotplug`, nunca se escribe en un volumen montado en el sistema, y el nombre se compara sin distinguir
+  mayúsculas. Se monta con `udisks2` (si ya estaba montada se usa donde está y no se desmonta), se copia con un nombre temporal y se renombra al
+  final, se **lee de vuelta y se compara la huella**, nunca sobrescribe (`_2`, `_3`), deja `nombre.pdf.sha256` al lado y se desmonta. Si el nombre
+  no coincide se para **antes** de dibujar. **Ojo: una memoria FAT/FAT32 no admite más de 11 letras en su nombre;** `ANZD-600226001` tiene 14, así que
+  la memoria hay que formatearla como **exFAT o NTFS** y llamarla igual que el equipo.
+- **Pantalla (`reportes`, PP 07, sección 16 de la especificación):** dos campos de fecha (`v_desde`, `v_hasta`) que abren el teclado numérico en modo
+  fecha (8 dígitos, la Pi pone las barras; no pide PIN), `b_hoy`, `b_generar` (pide el PIN; pasa a `Cancelar` mientras corre), línea de registros del
+  rango, línea de estado de la USB, barra y texto de avance y resultado con los primeros 12 caracteres de la huella. Se comprueba todo lo que la
+  pantalla puede comprobar (nombre, rango, USB) **antes** de pedir el PIN.
+- **Para que funcione en la Pi (hay que correr con `sudo`):** `scripts/instalar_servicios.sh --iniciar` (instala `python3-reportlab` y `python3-pypdf`,
+  la regla de polkit que permite montar y desmontar la USB con udisks2 y la unidad de `g2-core` con `ReadWritePaths` para `/media` y
+  `/run/media`). Mientras tanto, en esta Pi, `pypdf` está instalado con `pip --user` para poder probar.
+- **Probado:** 89 pruebas nuevas (618 en total): rango y zona horaria, emparejado con intervalos distintos, alertas con el umbral de su momento,
+  rojo/negrita fila por fila, PDF que abre solo con el nombre del equipo, USB (nombre, SD, FAT, copia, huella, espacio, sin sobrescribir), trabajo completo,
+  cancelación sin dejar nada, cadena alterada, servicio del núcleo y sus órdenes, y la página. En la Pi real: reporte de 6 291 filas (113 páginas)
+  en 10,9 s y la orden completa a través de `g2-core` (que encontró el error de la tarjeta SD).
+- **Hallazgos con la primera USB real (NTFS, 2026-10-27):** (1) `lsblk -J -o PATH,...` entrega una **lista plana** y la partición pierde el
+  transporte `usb` de su disco, así que **ninguna USB se reconocía** (las pruebas usaban un árbol inventado y no lo vieron); ahora se pide `NAME`
+  primero (árbol) y hay pruebas con la salida real. (2) Una USB sin formato reconocible ya no dice «Inserte la memoria», dice «La USB no
+  tiene un formato legible (use exFAT o NTFS)». (3) El escritorio de la Pi **monta solo** la memoria (`ntfs3`, `/media/pi/<nombre>`): se usa
+  donde está y no se desmonta. (4) `g2-core` corre con `ProtectSystem=strict`: **si la unidad instalada no trae `-/media -/run/media` en
+  `ReadWritePaths`, la USB se ve de solo lectura** y la copia falla con «Read-only file system» (comprobado: el reporte se dibuja y cifra, y falla
+  al copiar). (5) Tampoco estaba instalada la regla de polkit de `udisks2` (`udisksctl mount` por SSH: «Not authorized»). Ambas cosas se
+  corrigen reinstalando con `sudo ./scripts/instalar_servicios.sh --iniciar`.
+- **Ajustes del 2026-10-27 (a pedido del usuario):** (1) el reporte usa la **zona horaria de Colombia** (`America/Bogota`): es el valor por
+  defecto de `reporte.zona_horaria` y el de respaldo en `g2-ui` y en el proceso del reporte; en esta Pi se fijó con `g2ctl config-fijar`
+  (antes quedó en `America/El_Salvador`, por eso las horas de las primeras pruebas salían una hora antes). Los días completos del filtro y
+  las horas del PDF siguen esa zona. (2) Se **quitó la zona horaria del encabezado** de las páginas (decía `(America/...)` junto a «Generado»).
+  (3) Se **quitó del final del reporte la sección «Cambios de configuración en el rango»** (y su consulta a `config_historial`, que ya no se
+  usa); el anexo queda solo con las alarmas de oxígeno. El historial de cambios sigue en la base y en la cadena de auditoría. 631 pruebas.
+- **Ajustes 2 del 2026-10-29 (a pedido del usuario), hechos y comprobados uno por uno:** (1) se quitó **«Software»** (la versión es información
+  interna del equipo); (2) se quitaron las líneas **«Sensor N (modelo, serie)»** del resumen: quedan solo las estadísticas, con la etiqueta
+  «Sensor 1» y «Sensor 2»; (3) el PDF ahora **permite copiar el texto** (permisos `EXTRACT` y `EXTRACT_TEXT_AND_GRAPHICS` además de imprimir;
+  sigue sin permitir editar; comprobado con MuPDF y pypdf: copiar sí, imprimir sí, editar no; cada fila se extrae completa y en orden, y «—» y
+  «†» salen bien); (4) **logo de SPEAL** (`src/g2/reportes/recursos/speal.png`, el **mismo `nextion/imagenes/logo.png` de la pantalla**: el óvalo amarillo) de 22 pt de alto, a la
+  derecha de la **cabecera de la primera página** solamente (el nombre del equipo se corre a su izquierda; las demás páginas no cambian); si el archivo faltara, el reporte sale igual sin él. Probado con datos reales en la
+  Pi. 633 pruebas. **Contraste con lo dicho antes:** la protección ya no impide copiar; solo impide editar el archivo.
+- **Estado de los sensores en el reporte (2026-10-29):** el anexo ahora tiene dos secciones, **«Alarmas de oxígeno»** y **«Estado de los
+  sensores»** (título de la página: «Alarmas y estado de los sensores»). La segunda explica las celdas con «—»: cuándo se **apagó** o **encendió**
+  un sensor (eventos `SEN_DESHABILITADO` / `SEN_HABILITADO`, que ya guardaba la base) y cuándo estuvo **sin señal** (alarma `ALM_SENSOR_INVALIDO`, con
+  su hora de fin o «sigue sin señal»). La base agrupa en un solo evento los que se repiten en menos de `evento.agrupar_s` (60 s); el reporte
+  lo dice como «Apagado (2 veces; la última hh:mm:ss)». La primera página suma el renglón «Estado de sensores: N cambios». Consulta nueva
+  `consulta.leer_cambios_sensor`; sin migración. Comprobado con los datos reales del 27/10 en la Pi (apagados y encendidos de los dos sensores). 636 pruebas.
+- **Umbrales de alarma restaurados (2026-10-29):** en la Pi seguían con valores de prueba (15 %, 95 %, 15 s, acuse 500 s). Se fijaron con
+  `g2ctl config-fijar` a los de fábrica (**20 %, 92 %, 10 s, 120 s**, origen `local`, actor `claude-restauracion`; la histéresis ya era 0,5). El
+  núcleo los tomó sin reiniciar. Con el oxígeno real alrededor de 93,7 % la alarma de **ALTO** ahora se activa (antes no, con 95 %).
+  **Revisar:** `muestreo.intervalo_guardado_s` está en **300 s** en la Pi (fijado desde la pantalla el 27/10; el valor de fábrica es 15 s): no se
+  tocó, pero los reportes salen con una fila cada 5 minutos.
+- **Velocidad de la pantalla:** la interfaz sigue hablando a **9600 baudios** porque el `.HMI` aún no tiene `bauds=115200` en *Program.s*; no es un fallo
+  (la detección automática prueba 115200 y cae a 9600). Pendiente del usuario al construir el HMI; recomendado por la gráfica y el teclado.
+- **Pendiente:** construir la página `reportes` en el `.HMI` (sección 16) y probar con una memoria USB exFAT real; instalar con `sudo` (arriba);
+  definir el nombre real del equipo; confirmar la zona horaria; probar un reporte de una semana en la Pi real.
+
+---
+
+## D-045 — Pantalla bloqueada mientras se genera un reporte (y mientras se calibre)
+
+- **Fecha:** 2026-10-27
+- **Qué se pidió:** que la pantalla quede **inhabilitada** mientras se genera el reporte USB (y, en la calibración, mientras dure) para que
+  nada lo interrumpa y se eviten errores de manipulación.
+- **Decisión:** mientras el núcleo genera un reporte la pantalla **no atiende ningún toque**: no se puede salir de `reportes`, cambiar las
+  fechas, pedir otro reporte ni cancelar. **Se quitó el botón `Cancelar`** de la pantalla (la orden `reporte_cancelar` sigue existiendo en el
+  núcleo para uso técnico con `g2ctl`). La duración es corta (una semana ≈ 30 s) y el núcleo corta cualquier reporte a los 15 min.
+- **Cómo (dos barreras):** (1) la Pi **descarta** los toques (`_toque`); (2) la Pi le ordena a la pantalla `tsw 255,0` (deshabilita el toque
+  de todos los componentes de la página). Una página recién cargada trae los toques habilitados, así que la orden se **repite en cada carga**
+  de página y se devuelve (`tsw 255,1`) al terminar. Los botones se ven apagados, `b_generar` dice `Generando...` y `res` dice
+  `No toque la pantalla ni retire la memoria USB` (naranja). **No hay componentes nuevos en el `.HMI`.**
+- **El bloqueo se deduce del estado del núcleo**, no es un interruptor que alguien pueda dejar puesto: si el núcleo deja de responder, o se
+  reinicia `g2-ui`, o se corta la luz, la pantalla **se libera sola**. Cubre también el instante entre aceptar el PIN y que el núcleo marque
+  el reporte «en curso» (hasta 6 s). Si `g2-ui` arranca con un reporte en curso, lleva la pantalla a `reportes` y la bloquea.
+- **Efectos que hay que conocer:** durante esos ~30 s no se puede acusar una alarma con la pantalla (el sonido y los relevos siguen; el
+  acuse se puede hacer al terminar). Un reporte tiene tope de 15 min, por eso el bloqueo nunca es indefinido.
+- **Para la calibración:** se usará **el mismo mecanismo** (`_pantalla_bloqueada()`, `tsw 255,0` y descarte de toques) con el aviso
+  «Calibrando» en pantalla; allí el bloqueo ya estaba pedido junto con la suspensión de alarmas y relevos (ver pendientes).
+- **Probado:** 627 pruebas (6 nuevas): toques ignorados, `tsw` una sola vez y repetido al recargar, liberación al terminar y cuando el núcleo
+  no responde, bloqueo antes de que el núcleo responda y reinicio de la interfaz con un reporte en curso. **Falta probarlo en la pantalla
+  real** (que `tsw 255,0` apague de verdad el toque en el NX8048P050).
+
+---
+
+## D-046 — g2-uplink: envío de datos a la plataforma (etapa 1)
+
+- **Fecha:** 2026-10-29
+- **Decisiones del usuario:** (1) transporte **HTTPS por lotes** (no MQTT); (2) esta entrega es **solo el lado del equipo + el contrato** para la plataforma + una
+  plataforma simulada para probar (no se tocó el repositorio de la plataforma); (3) **sin órdenes remotas** todavía (etapa 2).
+- **Diagnóstico que lo motivó:** la plataforma actual (`iot-elsalvador`) solo recibe `POST /api/v1/data` con `{tipo_dato, valor}`: no tiene dónde confirmar la cola
+  de G2 registro por registro (D-008) ni un canal de órdenes. En la Pi había **20.903 registros pendientes** desde el 21/10 (18.167 lecturas, 1.317 de auditoría,
+  852 alarmas…) y no se pueden depurar hasta que se confirmen. `g2-core` es el único escritor (D-005), así que `g2-uplink` no puede marcar la cola por su cuenta.
+- **Qué hace (`src/g2/uplink/`, unidad `systemd/g2-uplink.service`):**
+  - **Lotes durables:** toma de `cola_envio` los pendientes (hasta `plataforma.lote_max`, 500), arma cada mensaje desde su fila (`mensajes.py`; con atraso salen
+    primero alarmas y eventos y al final las lecturas; un registro con varias revisiones viaja **una vez**, con su contenido de hoy y la `rev` más alta), lo
+    envía con `POST /api/g2/v1/lotes` y la plataforma contesta **por registro** `ok` / `rechazado` / `reintentar`. Solo `ok` confirma.
+  - **En vivo:** cada `plataforma.intervalo_visualizacion_s` (15 s) manda la foto del valor actual (`/api/g2/v1/vivo`; no se guarda ni se reintenta), porque la
+    base guarda cada 5 minutos (hoy) y el panel web no debe esperar tanto. Dice `nucleo_ok: false` si `g2-core` no responde (**lo que más importa alertar**) y no lleva
+    el nombre de la red WiFi ni las IP.
+  - **Quién anota:** al terminar un envío pide a `g2-core` la orden **`cola_resultado`** (confirmados / rechazados / fallidos + estado del enlace). **No es un
+    comando**: no se guarda en `comando` (si se guardara, cada envío dejaría un registro que a su vez hay que enviar, sin fin; comprobado que no deja ninguno).
+    `Almacen.cola_resultado` solo toca entradas pendientes o enviadas (repetir el aviso no cambia nada): confirmado → depurable; rechazado → queda con su motivo y
+    deja **un** evento `NET_ENVIO_RECHAZADO`; fallido → +1 intento y espera 30 s, 60 s… hasta 10 min.
+  - **Enlace:** `PLAT_ENLACE_PERDIDO` / `PLAT_ENLACE_RESTABLECIDO` / `PLAT_CREDENCIAL_RECHAZADA` (migración **009**), solo cuando el estado **cambia** (se repite el
+    aviso cada 10 min mientras esté mal, por si el núcleo se reinició). Sin red: esperas de 5 s hasta 5 min; credencial rechazada: no insiste 5 min, pero un secreto
+    corregido se prueba al instante; `413`: achica el lote a la mitad (mínimo 10) y no vuelve a crecer solo (volvería a fallar en cada ciclo) hasta que alguien
+    cambie `plataforma.lote_max`; `Retry-After` se respeta (tope 1 h). **Un registro solo se rechaza si la plataforma lo dice**: un 4xx general se trata como error de
+    protocolo y se reintenta.
+  - **Si `g2-core` no responde** (estado de más de 30 s) **no se envían lotes** (no habría quién anotara el resultado y se reenviaría lo mismo sin parar); la foto en
+    vivo sigue y lo dice.
+- **Seguridad (D-042):** solo `https` con el certificado verificado (`http` únicamente hacia `127.0.0.1`, para la plataforma simulada); no se siguen redirecciones (un
+  servidor desviado no recibe el secreto); el secreto va solo en `Authorization`, nunca en la URL, el cuerpo, la base ni el repositorio, y el `repr` del cliente y los
+  mensajes de error no lo muestran. Se guarda en `~/g2/secretos/plataforma.secreto` (carpeta 0700, archivo 0600; el servicio **se niega a leerlo si otros usuarios
+  pueden leerlo**) con `g2ctl plataforma-credencial` (se pide sin mostrarlo, o `--desde-stdin`). Un secreto por equipo (la plataforma guarda su hash).
+- **Apagado por omisión:** `plataforma.activa = 0`. No envía nada hasta que, al instalar, se cumplan **tres cosas**: `equipo.id` (el identificador ante la plataforma; hoy
+  vacío en la Pi), el secreto guardado y `plataforma.activa = 1`. `g2ctl plataforma-estado` dice cuál falta; el servicio publica su estado en `/run/g2/uplink.json`
+  (`desactivada`, `sin_equipo_id`, `sin_credencial`, `url_invalida`, `ok`, `sin_enlace`, `credencial_rechazada`…). Las claves nuevas de configuración (`plataforma.activa`,
+  `.url`, `.intervalo_envio_s`, `.lote_max`) solo se pueden cambiar localmente (la URL y el interruptor) o también desde la plataforma (los tiempos).
+- **Un defecto que encontraron las pruebas:** `auditoria_cadena` usa `seq` como clave y no `id`; sin corregirlo, sus 1.317 entradas pendientes habrían quedado sin poderse enviar.
+- **Contrato para la plataforma:** [CONTRATO_PLATAFORMA.md](CONTRATO_PLATAFORMA.md) (autenticación, los dos endpoints, columnas de cada tabla, qué verificar antes de
+  aceptar un equipo en producción). La plataforma simulada (`python3 -m g2.uplink.simulada`) cumple lo mínimo y sirve para probar el equipo sin tocar la real.
+- **Probado:** 704 pruebas (68 nuevas, también en la Pi con Python 3.13): mensajes, credencial, cliente (códigos, secreto, redirecciones, compresión, resultados mal
+  formados), cola, núcleo, el servicio con cliente falso (esperas, estados, foto en vivo) y de punta a punta con HTTP real contra la plataforma simulada. **Prueba en la Pi con
+  una copia de la base real** (nunca con la viva): los 20.927 pendientes se enviaron y confirmaron en **46 s** (42 lotes, 1 MB comprimido; 19.954 registros distintos al
+  agrupar revisiones), sin comandos de contabilidad. La cola real quedó intacta (20.922 pendientes) y el proceso real arranca y se detiene bien con la base viva (desactivado).
+- **Para ponerlo en marcha (usuario):** (1) `sudo ./scripts/instalar_servicios.sh --iniciar` (instala la unidad y la regla de polkit, crea `~/g2/secretos`); (2) la
+  plataforma debe implementar el contrato y dar de alta el equipo; (3) `python3 -m g2.ctl config-fijar equipo.id <id>`, `python3 -m g2.ctl plataforma-credencial`,
+  `python3 -m g2.ctl config-fijar plataforma.activa 1`; (4) `python3 -m g2.ctl plataforma-estado`.
+- **Descartar la cola (2026-10-29):** `g2ctl cola-descartar` marca como `rechazado` lo pendiente (por omisión sin `--confirmar` solo lo muestra); no borra, porque la base lo
+  prohíbe (D-010). Se usó una vez para los 21.028 registros de prueba; el descarte deja un evento y esas dos entradas nuevas sí se enviarán. Los registros descartados
+  nunca llegan a la plataforma ni se depuran. Una alarma que siga abierta y se actualice después sí enviará su revisión nueva: la plataforma debe aceptarla aunque no tenga la anterior.
+- **Pendiente:** etapa 2 (órdenes firmadas Ed25519, caducidad, `GET /api/g2/v1/ordenes`, cifrado del campo de contraseñas); mostrar el estado del enlace en la pantalla (hoy la principal solo dice `COLA n`); el aviso `NET_COLA_ACUMULADA` cuando la cola crece sin parar; implementar el contrato
+  en la plataforma y probarlo con MySQL.
+
+---
+
+## D-047 — g2-uplink vigila a g2-core (vigilancia cruzada, D-012)
+
+- **Fecha:** 2026-10-29
+- **Qué se hizo:** `src/g2/uplink/supervisor.py` (`SupervisorNucleo`) y `src/g2/supervision.py`. Si el estado de g2-core falta o tiene más de 30 s durante
+  **120 s seguidos** (cuatro veces su watchdog), g2-uplink pide `systemctl restart g2-core.service` (sin sudo: la regla de polkit ya permitía solo `restart`).
+  Es la segunda red de seguridad: systemd ya reinicia al núcleo si deja de dar su latido; esto cubre lo que ese watchdog no ve (núcleo "vivo" que no publica su estado).
+- **Límites:** al menos 300 s entre intentos y a lo sumo **3 por hora**; agotados, deja de insistir y lo dice (`/run/g2/uplink.json`, `g2ctl plataforma-estado`).
+  Cada intento cuenta aunque falle. Razón: reiniciar sin fin no arregla lo que un reinicio no arregla y estorba a quien mide el oxígeno.
+- **Independiente de la plataforma:** corre aunque `plataforma.activa` esté apagada. `--sin-vigilar` lo desactiva para pruebas a mano.
+- **Registro:** g2-uplink no escribe en la base (D-009); deja la nota `/run/g2/reinicio_nucleo.json` antes de pedir el reinicio y g2-core la lee al arrancar
+  (`Nucleo.iniciar(aviso_reinicio)`): el arranque queda con la razón `SVC_BLOQUEO_DETECTADO` y un evento con los segundos sin respuesta. Una nota de más de
+  10 minutos o ilegible se ignora; si el reinicio falla, la nota se borra. Sin migración.
+- **Probado:** 45 pruebas nuevas (también en la Pi, 749 en total). En la Pi, con la nota puesta a mano y `systemctl restart g2-core` sin sudo: el arranque 43 quedó
+  `SVC_BLOQUEO_DETECTADO` con su evento. **No probado:** el ciclo completo con un núcleo congelado de verdad, porque el watchdog de systemd (30 s) lo reinicia
+  mucho antes de los 120 s; solo se verá si ese watchdog falla.
+- **Pendiente:** la escalada a reiniciar la Raspberry Pi cuando se agoten los reinicios (depende de D-033), y avisar a la plataforma del agotamiento en la foto en vivo.
+
+---
+
+## D-048 — Calibración de cero en aire (desde la pantalla y `g2ctl`)
+
+- **Fecha:** 2026-10-29
+- **Estado:** primera etapa, **ampliada por D-049 (2026-10-30)**: el usuario necesita calibrar con gas patrón en un punto bajo (0,0 %) y uno alto
+  (98,0 %, 99,8 % u otro), no solo el cero en aire. La orden `calibrar_aire`, la referencia fija de 20,9 % y la página con un botón por sensor de
+  esta decisión ya no existen; lo demás (bloqueo de la pantalla, suspensión del sensor, eventos, reglas de rechazo) sigue igual.
+- **Contexto:** el Paracube analógico no se calibra por comando (D-001): la corrección es del equipo. El modelo ya era `O₂ = mV / 10 + cero`
+  (`senal.tension_a_pct`) y la tabla `calibracion` ya existía (tipo `offset_cero`, vigente única por sensor). No había ninguna calibración
+  registrada: se usa la de fábrica. Los dos sensores medían igual en la línea (~90,08 y ~90,09 % de promedio en 24 h).
+- **Decisiones del usuario:** (1) **solo cero en aire** (20,9 %) por ahora; el segundo punto con gas de referencia (ganancia) queda para
+  después sin romper nada (exigirá migración); (2) **un sensor a la vez**; (3) **bloqueo total** de la pantalla, como en reportes (D-045), sin
+  botón Cancelar; (4) límites: estable = variación ≤ **0,3 %** durante **30 s**, cero = promedio de esos 30 s, corrección máxima **±3 %**,
+  tope de **5 min**, con PIN y confirmación.
+- **Cómo funciona (`src/g2/nucleo/calibracion.py` y `Nucleo`):** el núcleo recibe la orden `calibrar_aire` (`sensor_id`) y, cada medio segundo,
+  pasa la tensión del sensor a una máquina de estados pura que desliza una ventana de 30 s hasta que es estable. El cero sale de la **tensión**
+  (`20,9 − mV/10`), no de la lectura ya corregida: calibrar dos veces seguidas no acumula. Si pasa de ±3 % (casi siempre: el sensor seguía
+  en la línea) o no se estabiliza, **falla y no se aplica**; el fallo queda en `calibracion` (`resultado = 'fallo'`, `vigente = 0`, con lo medido).
+  Si sale bien se guarda vigente (`gas_pct` 20,9, `gas_certificado` «aire ambiente», `mv_antes` medido, `comando_id`, `notas`) y rige de
+  inmediato. Eventos: `CAL_INICIADA`, `CAL_REGISTRADA`, `CAL_FALLIDA`, `CAL_CANCELADA` (migración 010 agrega los dos que faltaban).
+- **Seguridad durante la calibración:** el sensor calibrado **sale de la vigilancia** (sus alarmas se cierran y suspenden; al volver se
+  evalúan de nuevo) y sus muestras **no entran al promedio**: el intervalo se corta al empezar y al terminar y el tramo queda como hueco
+  con la marca `en_spoc` (`calidad` 4) y `sin_datos` (32). **Se rechaza** si ya hay otra calibración o un reporte, si el sensor está apagado,
+  o si **no quedaría otro sensor vigilando** (misma idea que no apagar el último sensor): el otro conserva alarmas, relevos y sonido.
+  No se puede apagar el sensor que se calibra. Al cerrar el núcleo con una calibración en curso se cancela y queda registrado.
+- **Pantalla:** `principal.b_calib` abre la página `calibracion` (PP 04; especificación en la sección 17 del HMI, **por construir en el `.HMI`**).
+  Tocar un sensor pide PIN y confirmación; luego la pantalla se bloquea con el mismo mecanismo que reportes (`tsw 255,0`, toques descartados,
+  se libera sola si el núcleo no responde), muestra la variación y el tiempo, y suena la voz «Calibrando» (`play 0,2,0`) cada pocos segundos
+  (una alarma del otro sensor tiene prioridad). El recuadro del sensor dice `CALIBRANDO` en azul. `g2ctl calibrar-aire ID` y
+  `calibrar-cancelar` dejan la orden para uso técnico (el sensor debe estar al aire).
+- **Probado:** 797 pruebas (también en la Pi): la máquina de estados (incluida una bajada de 90 % a 20,9 % con constante de 8 s, que mide ya
+  estable), el ciclo completo con base real, rechazos, la página con PIN, bloqueo, sonido y resultado. **No probado todavía** con un sensor
+  físico ni con la pantalla real (que `tsw 255,0` apague el toque; que el `.HMI` traiga la página y el audio 2). Se desplegó en la Pi
+  (migración 010, servicios activos); no se hizo una calibración real para no dejar un fallo de prueba en la base viva.
+- **Pendiente:** construir la página en el `.HMI`; probar con aire real cuánto tarda en estabilizarse el Paracube al sacarlo de ~90 % (el tope
+  de 5 min puede quedarse corto); el segundo punto con gas de referencia; el método SPOC guiado (solo se registra); calibrar desde la plataforma
+  (orden firmada, etapa 2 de D-046).
+
+---
+
+## D-049 — Calibración por puntos con gas patrón (bajo y alto)
+
+- **Fecha:** 2026-10-30
+- **Qué pasó:** D-048 solo calibraba el cero con aire a 20,9 %. El usuario aclaró que el procedimiento real usa **gas patrón**: un punto **bajo** (0,0 %)
+  y uno **alto** de valor variable (98,0 %, 99,8 % u otros según el gas disponible). El malentendido fue mío: asumí el aire como referencia y presenté el
+  segundo punto como una mejora posterior; el usuario aceptó «solo cero en aire» sobre esa base.
+- **Decisiones del usuario:** (1) **cada punto por separado**, en cualquier orden (no una sesión de dos puntos obligatoria); (2) del gas solo se anota
+  **el valor en %**; (3) límites: ganancia de **0,90 a 1,10**, puntos separados por **al menos 50 puntos**, estable = variación ≤ 0,3 % durante 30 s,
+  tope de 5 min por punto; el cero sigue limitado a **±3 %**.
+- **Modelo:** `O₂ = ganancia × (mV / mv_por_pct) + cero` (`senal.tension_a_pct`). Un punto con referencia menor de 50 % es el **bajo** (fija el cero) y de 50 % o
+  más el **alto** (fija la ganancia). La calibración vigente se compone con el último punto de cada lado (el otro se conserva de la fila vigente anterior):
+  con los dos, `ganancia = (R_alto − R_bajo)/(x_alto − x_bajo)` y `cero = R_bajo − ganancia·x_bajo`; solo el bajo: ganancia 1 y cero `R_bajo − x_bajo` (como D-048); solo
+  el alto: cero 0 y ganancia `R_alto/x_alto`. Siempre se parte de la **tensión** medida (`x`), nunca de la lectura ya corregida, así que repetir no acumula. El aire
+  (20,9 %) vale como punto bajo. Un fallo no se aplica y queda registrado con lo medido.
+- **Datos (migración 011, generada por `tools/generar_migracion_011.py`):** `calibracion` gana `ganancia`, `bajo_ref_pct`, `bajo_mv`, `alto_ref_pct`, `alto_mv` y el tipo
+  `puntos`; la fila guarda los dos puntos con los que se calculó la recta y `gas_pct`/`mv_antes` el punto medido en esa acción. Las columnas nuevas entran en la huella de
+  auditoría (disparadores y vista regenerados; las calibraciones anteriores se re-sellan). SQLite no deja cambiar un `CHECK` con `ALTER TABLE`: el tipo nuevo se agrega con
+  `writable_schema` y `PRAGMA writable_schema = RESET` (necesario para que SQLite relea el esquema antes de agregar las columnas; con ese orden fallaba con «near ','»), y
+  una verificación dentro de la migración la aborta si el cambio no se aplicó. Requiere SQLite 3.33 o más (la Pi trae 3.46). Probada con una copia de la base real en la Pi
+  (versión 10 → 11, integridad y cadena de auditoría correctas). Contrato con la plataforma actualizado (`CONTRATO_PLATAFORMA.md`): columnas nuevas y valor `puntos`.
+- **Órdenes:** `calibrar_punto` (`sensor_id`, `referencia_pct` de 0 a 100) reemplaza a `calibrar_aire`; `calibrar_cancelar` sigue. `g2ctl calibrar-punto ID REF`. Se rechaza igual
+  que antes (otra calibración, reporte en curso, sensor apagado, sin otro sensor vigilando) y además si la concentración no es un número entre 0 y 100.
+- **Pantalla:** la página `calibracion` se rehízo (sección 17 del HMI): `v_s1`/`v_s2` eligen el sensor, `b_bajo` (0,0 %), `b_aire` (20,9 %) y `v_gas` (teclado numérico, con punto
+  decimal) eligen el gas, `i1` dice si es punto bajo o alto, `i2` la calibración vigente, `b_iniciar` pide PIN y confirmación (con el sensor y el gas en la pregunta). Elegir no pide PIN.
+  Controles `01` a `07` (`protocolo.CONTROLES[0x04]`). `res` pasa a 80 letras. Los mensajes del núcleo para la pantalla son cortos (`ResultadoCalibracion.breve`) y los detallados
+  van al registro. El reporte PDF muestra ganancia, cero y los dos gases de la calibración vigente.
+- **Probado:** 828 pruebas (también la migración, con datos). **Desplegado el 2026-10-30** (copia previa de la base en `/home/pi/g2/respaldos/g2_antes_de_011_*.db`, esquema 11, cadena
+  de auditoría correcta). El despliegue se retrasó un día porque el usuario probaba la versión anterior; al construir el `.HMI` nuevo y tocar `v_gas` no pasaba nada porque la Pi aún traía la
+  tabla de controles vieja (la página 04 solo conocía `01` a `03`: `v_gas` llegaba como `control?05`, y `b_bajo` (`03`) se leía como `b_volver`). **Lección:** un cambio del protocolo
+  del `.HMI` exige desplegar la Pi en el mismo momento en que el usuario carga el `.tft` nuevo.
+- **Las calibraciones de cero en aire de D-048 se conservan como punto bajo:** la migración copia `gas_pct` y `mv_antes` de las filas `offset_cero` correctas a `bajo_ref_pct` y `bajo_mv`.
+  La corrección vigente no cambia (ganancia 1, mismo cero), y al medir después un punto alto se compone con ese punto (aire 20,9 % + 98,0 % distan 77 puntos). Ese día ya había dos
+  calibraciones reales en aire vigentes (S1 +0,04 %, S2 +0,10 %: los sensores marcaban 20,86 y 20,80 % en aire) y tres intentos fallidos con el gas de 98 % puesto, hechos con la versión anterior.
+- **Otros cambios del día:** `ipc._escribir_atomico` reintenta unos milisegundos si Windows tiene ocupado el archivo (el `PermissionError` esporádico en las pruebas de desarrollo; en
+  Linux no cambia nada) y una prueba de reportes usaba el 30/10/2026 como «fecha futura» (ya no lo es).
+- **Pendiente:** probar con un sensor real cuánto tarda en estabilizarse con un gas nuevo (el tope de 5 min puede quedarse corto); método SPOC guiado (solo se registra); calibrar
+  desde la plataforma (orden firmada, etapa 2 de D-046); decidir si hace falta registrar el certificado del gas (hoy solo el valor).
+
+---
+
 ## Decisiones pendientes
 
 - Probar las alertas por correo con MySQL y la cuenta real, y decidir cuándo

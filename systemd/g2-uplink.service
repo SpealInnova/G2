@@ -1,0 +1,44 @@
+# g2-uplink: envio de datos a la plataforma sp-peek.com (D-009, D-046).
+#
+# Lee la base SOLO para lectura (por eso necesita la carpeta de datos: SQLite en modo WAL crea archivos auxiliares) y el
+# estado que publica g2-core en /run/g2; cuando la plataforma confirma un lote, le pide a g2-core que lo anote (orden
+# cola_resultado). NUNCA escribe en la base. El equipo siempre INICIA la conexion (HTTPS): no abre ningun puerto.
+#
+#  * Sin credencial, sin equipo.id o con plataforma.activa apagada no envia nada (y lo dice en /run/g2/uplink.json).
+#  * El secreto del equipo esta en /home/pi/g2/secretos (solo lectura para el servicio; lo guarda g2ctl plataforma-credencial).
+#  * Type=notify + WatchdogSec: watchdog por progreso, igual que g2-core y g2-ui (D-012). Es mas largo (120 s) porque una vuelta
+#    puede esperar a la red (5 s para conectar y 20 s para la respuesta, dos veces: en vivo y lote).
+#  * ProtectSystem=strict ya deja todo en solo lectura menos la carpeta de datos, asi que el secreto solo se puede leer.
+#  * Sin Requires=g2-core: si el nucleo se cae, sigue vivo y avisa a la plataforma que el nucleo no responde.
+[Unit]
+Description=G2 - envio de datos a la plataforma
+Documentation=https://github.com/SpealInnova/G2
+After=g2-core.service network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/g2/datos
+Environment=PYTHONPATH=/home/pi/g2/dev/src
+Environment=PYTHONUNBUFFERED=1
+Environment=G2_BD=/home/pi/g2/datos/g2.db
+Environment=G2_RUN=/run/g2
+Environment=G2_SECRETOS=/home/pi/g2/secretos
+RuntimeDirectory=g2
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 -m g2.uplink
+Restart=always
+RestartSec=5
+WatchdogSec=120
+TimeoutStartSec=30
+TimeoutStopSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/pi/g2/datos
+
+[Install]
+WantedBy=multi-user.target

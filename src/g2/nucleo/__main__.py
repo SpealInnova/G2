@@ -19,13 +19,14 @@ import signal
 import sys
 from pathlib import Path
 
-from g2 import __version__, ipc
+from g2 import __version__, ipc, supervision
 from g2.almacenamiento.almacen import Almacen
 from g2.nucleo import notificacion
 from g2.nucleo.fuentes import FuenteAds1263, FuenteSimulada
 from g2.nucleo.nucleo import Nucleo
 from g2.nucleo.salud import MedidorLinux
 from g2.nucleo.servicio_red import ServicioRed
+from g2.nucleo.servicio_reportes import ServicioReportes
 from g2.red.gestor import GestorRed
 
 
@@ -81,10 +82,12 @@ def main() -> int:
     carpeta_run = Path(args.run) if args.run else ipc.carpeta_por_defecto()
     publicador = ipc.PublicadorEstado(carpeta_run) if carpeta_run else None
     servicio_red = None if args.emulado else ServicioRed(GestorRed())     # en un PC no hay nmcli
-    nucleo = Nucleo(almacen, fuente, medidor=MedidorLinux(ruta.parent, ruta), servicio_red=servicio_red)
+    servicio_reportes = ServicioReportes(ruta)
+    nucleo = Nucleo(almacen, fuente, medidor=MedidorLinux(ruta.parent, ruta), servicio_red=servicio_red,
+                    servicio_reportes=servicio_reportes)
     if servicio_red is not None:
         servicio_red.iniciar()
-    limpio = nucleo.iniciar()
+    limpio = nucleo.iniciar(supervision.tomar_aviso(carpeta_run))     # la nota de g2-uplink, si lo reinicio
     print(f"g2-core {__version__} en marcha. Base: {ruta}. "
           f"Cierre anterior {'ordenado' if limpio else 'NO ordenado'}. Ctrl+C para salir.")
     notificacion.listo(f"g2-core {__version__} en marcha")          # systemd: ya arranco
@@ -108,6 +111,7 @@ def main() -> int:
         notificacion.deteniendo()
         if servicio_red is not None:
             servicio_red.detener()
+        servicio_reportes.detener()
         nucleo.cerrar()
         almacen.cerrar()
         if contexto is not None:

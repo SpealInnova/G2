@@ -24,6 +24,9 @@ NOMBRE_ESTADO = "estado.json"
 CARPETA_ORDENES = "ordenes"
 
 
+REEMPLAZOS = 8                               # intentos de reemplazar el archivo si el sistema lo tiene ocupado un instante
+
+
 def carpeta_por_defecto() -> Path | None:
     """Carpeta de ``G2_RUN`` si la variable existe; si no, None (sin comunicacion)."""
     valor = os.environ.get("G2_RUN")
@@ -37,7 +40,16 @@ def _escribir_atomico(ruta: Path, datos: bytes, modo: int = 0o644) -> None:
     descriptor = os.open(temporal, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, modo)
     with os.fdopen(descriptor, "wb") as archivo:
         archivo.write(datos)
-    os.replace(temporal, ruta)
+    for intento in range(REEMPLAZOS):
+        try:
+            os.replace(temporal, ruta)
+            return
+        except PermissionError:
+            # En Windows (solo desarrollo) un antivirus o el indexador pueden tener abierto el destino un instante.
+            # En Linux no ocurre: ahi el reemplazo es atomico y no se espera.
+            if intento == REEMPLAZOS - 1:
+                raise
+            time.sleep(0.02)
 
 
 class PublicadorEstado:

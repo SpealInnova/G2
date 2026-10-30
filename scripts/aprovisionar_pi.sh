@@ -96,7 +96,7 @@ systemctl disable hciuart.service 2>/dev/null || true
 # --- 3. Paquetes -----------------------------------------------------------------
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends sqlite3 tmux iw
+apt-get install -y -qq --no-install-recommends sqlite3 tmux iw python3-reportlab python3-pypdf
 
 # --- 4. WiFi sin ahorro de energia ---------------------------------------------------
 # El ahorro de energia del WiFi viene activo por omision en la Raspberry Pi y puede

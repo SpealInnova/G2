@@ -1,9 +1,10 @@
 """De la tension del sensor al % de oxigeno, y su agregado por intervalo de almacenamiento.
 
-El Paracube analogico entrega 10 mV por cada 1 % de O2 (``sensor.mv_por_pct``). La correccion de
-cero de una calibracion (``calibracion.offset_pct``) se suma al resultado:
+El Paracube analogico entrega 10 mV por cada 1 % de O2 (``sensor.mv_por_pct``). La calibracion vigente
+(``calibracion.ganancia`` y ``calibracion.offset_pct``, D-049) corrige la recta; sin calibracion rige la de fabrica
+(ganancia 1, cero 0):
 
-    O2 [%] = tension [mV] / mv_por_pct + offset_pct
+    O2 [%] = ganancia * tension [mV] / mv_por_pct + offset_pct
 
 Cada intervalo de almacenamiento (D-007, ``muestreo.intervalo_guardado_s``) se guarda como UN
 registro con el promedio, el minimo y el maximo de las muestras. Un hueco queda como hueco (n = 0 y
@@ -28,11 +29,11 @@ SATURACION_BAJA_PCT = -15.0
 SATURACION_ALTA_PCT = 200.0
 
 
-def tension_a_pct(tension_v: float, mv_por_pct: float, offset_pct: float = 0.0) -> float:
+def tension_a_pct(tension_v: float, mv_por_pct: float, offset_pct: float = 0.0, ganancia: float = 1.0) -> float:
     """% de O2 a partir de la tension diferencial del sensor, en voltios."""
     if mv_por_pct <= 0:
         raise ValueError("mv_por_pct debe ser positivo")
-    return tension_v * 1000.0 / mv_por_pct + offset_pct
+    return ganancia * tension_v * 1000.0 / mv_por_pct + offset_pct
 
 
 def calidad_de_muestra(o2_pct: float) -> int:
@@ -93,6 +94,11 @@ class Acumulador:
         """Un intento de lectura que no dio un dato valido."""
         self._invalidas += 1
 
+    def agregar_calibrando(self) -> None:
+        """Una muestra tomada durante una calibracion: no es medicion, no entra en el promedio y deja la marca."""
+        self._invalidas += 1
+        self._calidad |= CALIDAD_EN_SPOC
+
     def cerrar(self) -> Resumen:
         """Resume el intervalo y deja el acumulador listo para el siguiente.
 
@@ -101,7 +107,7 @@ class Acumulador:
         para que quien lea el registro sepa que el promedio sale de un intervalo con huecos.
         """
         if self._n == 0:
-            resumen = Resumen(0, None, None, None, None, CALIDAD_SIN_DATOS)
+            resumen = Resumen(0, None, None, None, None, CALIDAD_SIN_DATOS | self._calidad)
         else:
             calidad = self._calidad | (CALIDAD_INESTABLE if self._invalidas else 0)
             resumen = Resumen(self._n, self._suma_o2 / self._n, self._min, self._max,

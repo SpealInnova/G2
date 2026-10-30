@@ -17,6 +17,7 @@ Diseño (decision D-016): ver MEMORIA_TECNICA.md y el encabezado del SQL generad
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -54,6 +55,8 @@ def esquema_en_memoria(migraciones: tuple[str, ...]) -> sqlite3.Connection:
     """Base temporal en memoria con las migraciones indicadas, para leer el
     esquema real (columnas) de las tablas auditadas."""
     memoria = sqlite3.connect(":memory:")
+    # Las migraciones posteriores a la 003 usan sha256() en sus UPDATE (los disparadores se compilan al ejecutarlas).
+    memoria.create_function("sha256", 1, lambda v: hashlib.sha256(str(v).encode("utf-8")).hexdigest())
     for nombre in migraciones:
         memoria.executescript((SQL / nombre).read_text(encoding="utf-8"))
     return memoria

@@ -303,15 +303,24 @@ class Almacen:
                               mv_despues: float | None = None, offset_pct: float | None = None,
                               presion_hpa: float | None = None, temperatura_c: float | None = None,
                               vigente: bool = False, comando_id: int | None = None,
-                              notas: str | None = None) -> int:
-        """Registra una calibracion. Si es vigente, reemplaza a la anterior (lo hace la base)."""
+                              notas: str | None = None, ganancia: float | None = None,
+                              bajo_ref_pct: float | None = None, bajo_mv: float | None = None,
+                              alto_ref_pct: float | None = None, alto_mv: float | None = None) -> int:
+        """Registra una calibracion. Si es vigente, reemplaza a la anterior (lo hace la base). ``ganancia`` y los puntos
+        ``bajo_*`` / ``alto_*`` son los de la calibracion por puntos (D-049)."""
         with self._transaccion():
             return self._insertar("calibracion", {
                 **self._tiempo(), "sensor_id": sensor_id, "tipo": tipo, "gas_pct": gas_pct,
                 "gas_certificado": gas_certificado, "mv_antes": mv_antes, "mv_despues": mv_despues,
                 "offset_pct": offset_pct, "presion_hpa": presion_hpa, "temperatura_c": temperatura_c,
                 "origen": origen, "actor": actor, "comando_id": comando_id, "resultado": resultado,
-                "vigente": int(vigente), "notas": notas})
+                "vigente": int(vigente), "notas": notas, "ganancia": ganancia,
+                "bajo_ref_pct": bajo_ref_pct, "bajo_mv": bajo_mv, "alto_ref_pct": alto_ref_pct, "alto_mv": alto_mv})
+
+    def calibracion_vigente_fila(self, sensor_id: int) -> dict | None:
+        """La fila de la calibracion vigente del sensor (``None``: rige la de fabrica)."""
+        fila = self.db.execute("SELECT * FROM calibracion WHERE sensor_id = ? AND vigente = 1", (sensor_id,)).fetchone()
+        return dict(fila) if fila else None
 
     # ------------------------------------------------------------------ lecturas y salud
     def insertar_lectura(self, *, sensor_id: int, periodo_ms: int, n_muestras: int,
@@ -465,6 +474,72 @@ class Almacen:
                 (estado, self.reloj.ahora_ms(),
                  json.dumps(resultado, ensure_ascii=False) if resultado is not None else None,
                  comando_id))
+
+    # ------------------------------------------------------------------ cola de envio (g2-uplink, D-046)
+    REINTENTO_BASE_S = 30                  # espera tras un registro que la plataforma pidio reintentar; se duplica...
+    REINTENTO_MAX_S = 600                  # ...hasta este tope (10 min, para que un reloj desajustado no los deje dormidos)
+    MAX_ERROR = 200                        # largo maximo del motivo que se guarda
+
+    def cola_resultado(self, *, confirmados=(), rechazados: dict[int, str] | None = None,
+                       fallidos: dict[int, str] | None = None) -> dict[str, int]:
+        """Anota lo que paso con un envio a la plataforma; solo ``g2-core`` escribe, ``g2-uplink`` se lo pide.
+
+        ``confirmados``: ids de ``cola_envio`` que la plataforma confirmo (por registro, D-008): pasan a ``confirmado``,
+        el unico estado que permite depurar. ``rechazados``: ``{id: motivo}`` que la plataforma dio por invalidos: pasan a
+        ``rechazado`` (no se borran ni se reintentan) y dejan UN evento ``NET_ENVIO_RECHAZADO``. ``fallidos``:
+        ``{id: motivo}`` que deben reintentarse: suma un intento y espera mas cada vez. Solo toca entradas que seguian
+        pendientes o enviadas, asi repetir el aviso no cambia nada. Devuelve cuantas entradas cambio cada grupo.
+        """
+        rechazados, fallidos = rechazados or {}, fallidos or {}
+        ahora = self.reloj.ahora_ms()
+        hecho = {"confirmados": 0, "rechazados": 0, "fallidos": 0}
+        abiertas = "estado IN ('pendiente', 'enviado')"
+        with self._transaccion():
+            for i in confirmados:
+                hecho["confirmados"] += self.db.execute(
+                    f"UPDATE cola_envio SET estado = 'confirmado', enviado_ms = COALESCE(enviado_ms, ?), "
+                    f"confirmado_ms = ?, ultimo_error = NULL WHERE id = ? AND {abiertas}", (ahora, ahora, i)).rowcount
+            for i, motivo in rechazados.items():
+                hecho["rechazados"] += self.db.execute(
+                    f"UPDATE cola_envio SET estado = 'rechazado', ultimo_error = ? WHERE id = ? AND {abiertas}",
+                    (str(motivo)[:self.MAX_ERROR], i)).rowcount
+            for i, motivo in fallidos.items():
+                hecho["fallidos"] += self.db.execute(
+                    f"UPDATE cola_envio SET intentos = intentos + 1, ultimo_error = ?, proximo_intento_ms = ? + "
+                    f"MIN(?, ? * (1 << MIN(intentos, 5))) * 1000 WHERE id = ? AND {abiertas}",
+                    (str(motivo)[:self.MAX_ERROR], ahora, self.REINTENTO_MAX_S, self.REINTENTO_BASE_S, i)).rowcount
+            if hecho["rechazados"]:
+                ejemplos = [{"id": i, "motivo": str(m)[:80]} for i, m in list(rechazados.items())[:3]]
+                self._evento_sin_tx("NET_ENVIO_RECHAZADO", "g2-uplink",
+                                    mensaje=f"La plataforma rechazo {hecho['rechazados']} registro(s)",
+                                    datos={"cantidad": hecho["rechazados"], "ejemplos": ejemplos})
+        return hecho
+
+    def cola_descartar(self, *, motivo: str, actor: str, hasta_id: int | None = None) -> dict[str, int]:
+        """Deja de enviar lo que sigue pendiente (p. ej. registros de prueba antes de la puesta en marcha).
+
+        No borra nada (D-010): las entradas pasan a ``rechazado`` con el motivo, los registros siguen en el equipo y quedan
+        fuera de ``v_depurable``. Solo toca entradas con ``id <= hasta_id`` (por omision, las que hay ahora). Deja UN evento
+        ``NET_ENVIO_RECHAZADO``. Devuelve cuantas entradas descarto por tabla.
+        """
+        motivo = motivo.strip()
+        if not motivo:
+            raise ErrorAlmacen("hace falta el motivo del descarte")
+        abiertas = "estado IN ('pendiente', 'enviado')"
+        with self._transaccion():
+            if hasta_id is None:
+                hasta_id = self.db.execute("SELECT COALESCE(MAX(id), 0) FROM cola_envio").fetchone()[0]
+            por_tabla = {f["tabla"]: f["n"] for f in self.db.execute(
+                f"SELECT tabla, COUNT(*) AS n FROM cola_envio WHERE {abiertas} AND id <= ? GROUP BY tabla", (hasta_id,))}
+            if por_tabla:
+                self.db.execute(
+                    f"UPDATE cola_envio SET estado = 'rechazado', proximo_intento_ms = NULL, ultimo_error = ? "
+                    f"WHERE {abiertas} AND id <= ?", (f"Descartado: {motivo}"[:self.MAX_ERROR], hasta_id))
+                self._evento_sin_tx("NET_ENVIO_RECHAZADO", f"g2ctl:{actor}",
+                                    mensaje=f"Se descartaron {sum(por_tabla.values())} registro(s) pendientes de envio: {motivo}"[:300],
+                                    datos={"cantidad": sum(por_tabla.values()), "hasta_id": hasta_id, "por_tabla": por_tabla,
+                                           "motivo": motivo[:200]})
+        return por_tabla
 
     # ------------------------------------------------------------------ PIN de la pantalla (D-038)
     def pin_fijar(self, tipo: str, pin: str, *, origen: str, actor: str | None = None) -> None:

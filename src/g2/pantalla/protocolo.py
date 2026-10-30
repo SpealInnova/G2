@@ -38,10 +38,13 @@ CONTROLES: dict[int, dict[int, str]] = {
            0x05: "v_sensor2", 0x06: "b_volver"},
     0x03: {0x01: "b_conectar", 0x02: "b_buscar", 0x03: "n1", 0x04: "n2", 0x05: "n3", 0x06: "n4",
            0x07: "b_volver"},
+    0x04: {0x01: "v_s1", 0x02: "v_s2", 0x03: "b_bajo", 0x04: "b_aire", 0x05: "v_gas", 0x06: "b_iniciar",
+           0x07: "b_volver"},
     0x05: {0x01: "b_reportes", 0x02: "b_servicios", 0x03: "b_reiniciar", 0x04: "b_auditoria",
            0x05: "b_volver"},
     0x06: {**{0x10 + d: f"k_{d}" for d in range(10)}, 0x1A: "k_punto", 0x1B: "k_signo",
            0x1C: "b_borrar", 0x1D: "b_limpiar", 0x1E: "b_cancelar", 0x1F: "b_aceptar"},
+    0x07: {0x01: "v_desde", 0x02: "v_hasta", 0x03: "b_hoy", 0x04: "b_generar", 0x05: "b_volver"},
     0x08: {0x01: "b_si", 0x02: "b_no"},
     0x0A: {0x01: "salir"},                  # grafica: un toque en cualquier parte vuelve a la principal
     # Teclado de texto: 40 teclas de caracteres (t_00 a t_39, codigos 00 a 27) y las de control.
@@ -219,5 +222,8 @@ def orden_pagina(nombre: str) -> str:
 
 
 ORDEN_SONIDO_ALARMA = "play 0,1,0"          # canal 0, audio 1 (alarma.wav), una vez
+ORDEN_SONIDO_CALIBRANDO = "play 0,2,0"      # canal 0, audio 2 (calibrando.wav, la voz que dice «Calibrando»), una vez
 ORDEN_LEER_PROTOCOLO = "get principal.proto.val"
-ORDEN_INFORMAR_TOQUES = "sendxy=1"          # la pantalla avisa de CUALQUIER toque (no solo de los botones)
+ORDEN_BLOQUEAR_TOQUES = "tsw 255,0"         # la pantalla ignora el toque de TODOS los componentes de la pagina actual
+ORDEN_DESBLOQUEAR_TOQUES = "tsw 255,1"
+ORDEN_INFORMAR_TOQUES = "sendxy=1"        # la pantalla avisa de CUALQUIER toque (no solo de los botones)

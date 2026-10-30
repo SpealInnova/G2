@@ -8,7 +8,7 @@
 #    la decision de los relevos (D-033).
 #  * No depende de la red: debe medir y guardar sin conexion.
 #  * Endurecimiento minimo: sin nuevos privilegios, /tmp privado y el sistema de archivos de solo lectura
-#    salvo la carpeta de datos.
+#    salvo la carpeta de datos y la memoria USB de los reportes.
 [Unit]
 Description=G2 - nucleo (lectura, alarmas y almacenamiento)
 Documentation=https://github.com/SpealInnova/G2
@@ -41,7 +41,9 @@ TimeoutStopSec=15
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/home/pi/g2/datos
+# Los reportes se copian a la memoria USB que udisks2 monta en /media o /run/media (D-044); el guion hace que
+# no falle si la carpeta aun no existe.
+ReadWritePaths=/home/pi/g2/datos -/media -/run/media
 
 [Install]
 WantedBy=multi-user.target

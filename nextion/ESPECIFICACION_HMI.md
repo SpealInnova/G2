@@ -257,6 +257,14 @@ audio 1, una vez) y lo **repite cada pocos segundos** mientras haya una alarma s
 si `g2-ui` falla, el sonido se detiene solo y no queda sonando sin control. Tras **Acusar** se silencia
 por `alarma.acuse_silencio_s` (120 s, D-031).
 
+### Sonido «Calibrando»
+
+Voz grabada por el usuario que dice «Calibrando» (`nextion/sonidos/calibrando.wav`, 0,61 s, mono, 16 bits, 16 kHz; se obtiene de la
+grabación original con `tools/convertir_sonido_voz.py`). Se agrega en el panel **Audio** como **el tercero** (id 2), después de
+`pulsacion` (0) y `alarma` (1). Lo ordena la Pi con `play 0,2,0` y lo repite cada pocos segundos mientras dure una calibración (con las
+alarmas suspendidas el canal 0 queda libre). Su pico es 0,85 y su energía (RMS 0,12) es una cuarta parte de la del tono de alarma (0,52),
+que a volumen 50 no reinicia la pantalla.
+
 El pitido lo reproduce la propia pantalla, sin ir y volver a la Pi, para que suene al instante
 aunque la Pi esté ocupada (decisión de D-029). Si `g2-ui` falla, los toques siguen sonando, pero
 no navegan. Si el editor rechaza el `.wav` o el canal 1 no existe en este modelo, se ajusta al
@@ -611,7 +619,144 @@ hasta que la pantalla se reinicie.
 **Se recomienda 115200 baudios** (`bauds=115200` en *Program.s*): dibujar la gráfica entera con `addt` son unos 2,1 KB (1,4 KB sin los límites): ~2 s a
 9600 y 0,2 s a 115200.
 
-## 16. Cómo probar lo construido
+## 16. Página `reportes` (PP = 07)
+
+Exporta las lecturas a una **memoria USB** como un **PDF protegido con contraseña**. Se abre desde `sistema` (botón
+*Reportes USB*). **Fondo:** `interna.png` (`fondo`, `pic` = 1). Botones con `style` = flat, `sta` = solid color y
+`pco2` = `pco`; los textos con `sta` = solid color y `bco` = tarjeta, salvo `titulo` (crop image, `picc` = 1).
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Reportes | blanco | crop image (`picc` 1) | 30; centrado |
+| `i2` | Text | 32 | 148 | 736 | 36 | 0 | (vacío) | texto | tarjeta | 60; `xcen`=0; días y registros del rango, o por qué no sirve (rojo) |
+| `i1` | Text | 32 | 188 | 736 | 36 | 0 | (vacío) | texto | tarjeta | 60; `xcen`=0; estado de la memoria USB (rojo si falta o se llama distinto) 
+| `prog` | Text | 32 | 332 | 736 | 28 | 0 | (vacío) | texto_suave | tarjeta | 60; `xcen`=0; lo que está haciendo (`Dibujando páginas... 40 %`) |
+| `res` | Text | 32 | 364 | 736 | 36 | 0 | (vacío) | texto_suave | tarjeta | 70; `xcen`=0; resultado (rojo si falló) |
+| `v_desde` | Button | 32 | 84 | 360 | 56 | 4 | Desde: 27/10/2026 | texto | boton | 24; `bco2` = boton_pulsado; se toca para cambiar la fecha |
+| `v_hasta` | Button | 408 | 84 | 360 | 56 | 4 | Hasta: 27/10/2026 | texto | boton | 24; `bco2` = boton_pulsado ||
+| `b_hoy` | Button | 32 | 236 | 360 | 56 | 4 | Imprimir hoy | texto | boton | `bco2` = boton_pulsado; el reporte del día de hoy, de una vez |
+| `b_generar` | Button | 408 | 236 | 360 | 56 | 4 | Generar reporte | texto | boton | 20; la Pi lo cambia a `Generando...` mientras corre |
+| `barra` | Progress bar | 32 | 304 | 736 | 24 | | | pco = normal (1128) | bco = boton | `val` = 0; la Pi escribe `val` de 0 a 100 |
+| `b_volver` | Button | 32 | 404 | 736 | 56 | 4 | Volver | texto | boton | `bco2` = boton_pulsado |
+
+**Eventos** (`printh 65 07 CC 00 FF FF FF` al soltar; además `play 1,0,0` en *Touch Press*): `v_desde` = `01`,
+`v_hasta` = `02`, `b_hoy` = `03`, `b_generar` = `04`, `b_volver` = `05`, página cargada = `FE`.
+
+**Cómo se usa (todo lo decide la Pi):**
+
+1. Al abrir la página el rango es **el día de hoy**. Tocar `v_desde` o `v_hasta` abre el **teclado numérico** (sección 7) para
+   escribir la fecha con 8 dígitos (`DDMMAAAA`; la Pi muestra las barras: `27/10/2026`). Las fechas son **días completos**
+   (de las 00:00 del primer día a las 24:00 del último, en la hora de Colombia, `America/Bogota`): no se escriben horas.
+2. **Máximo 7 días** por reporte (un reporte más largo tardaría demasiado y exigiría mucho a la Raspberry Pi). No hay fechas futuras.
+3. `i2` dice cuántos registros trae el rango (`3 día(s) · 17280 registros por sensor`); si no sirve, lo dice en rojo.
+4. **La memoria USB debe llamarse igual que el equipo** (el nombre que se ve en `config`, por ejemplo `ANZD-600226001`).
+   Es un seguro más: un reporte no se copia a una memoria cualquiera. `i1` lo dice. **Ojo:** una memoria **FAT/FAT32 no admite
+   más de 11 letras** en su nombre: con un nombre de 14 hay que **formatearla como exFAT o NTFS** y ponerle ese nombre.
+5. `b_generar` (o `b_hoy`, que genera el de hoy sin tocar fechas) **pide el PIN** y arranca. El reporte lo hace el núcleo en un
+   proceso aparte, con prioridad baja: **la medición y las alarmas no se enteran**. Mientras corre, **la pantalla queda
+   bloqueada** (ver abajo): `b_generar` dice `Generando...`, los botones se ven apagados y `barra` y `prog` muestran el avance.
+6. Al terminar, `res` dice cuántas filas y páginas tiene y los primeros 12 caracteres de su **huella SHA-256**. La huella
+   completa queda en el archivo `.sha256` junto al PDF y en el registro de eventos del equipo (`REPORTE_GENERADO`).
+
+**Bloqueo de la pantalla (D-045).** Desde que se acepta el PIN hasta que el reporte termina (o falla) la pantalla **no atiende
+ningún toque**, para que nada lo interrumpa: no se puede salir de la página, cambiar las fechas ni pedir otro reporte, y **no hay
+botón Cancelar**. La Pi lo hace de dos maneras: descarta los toques y le ordena a la pantalla `tsw 255,0` (deshabilita el toque de
+todos los componentes de la página; lo repite cada vez que la página carga y lo devuelve con `tsw 255,1` al terminar). Mientras tanto
+pone `b_generar`, `b_hoy`, `b_volver`, `v_desde` y `v_hasta` en `pco` = inactivo, y `res` = `No toque la pantalla ni retire la memoria USB`
+(`pco` = aviso). **No hace falta ningún componente nuevo ni cambiar nada en el `.HMI`.** Si el núcleo deja de responder o se corta la
+luz, la pantalla se libera sola (el bloqueo no es un estado guardado). Un reporte de una semana tarda ~30 s; el tope es de 15 min.
+El sonido y los relevos de alarma siguen funcionando; solo el acuse con la pantalla espera a que termine.
+
+**El PDF:** se abre con una **contraseña que es el nombre del equipo** (cifrado AES-256); se puede ver, imprimir y **copiar su texto** (para pasar los datos a una hoja de cálculo), no editar. Una fila por intervalo de guardado, con el número de registro de cada sensor en la base de datos, la fecha y la hora,
+y la lectura de los dos sensores. **Las filas con alerta de oxígeno (BAJO o ALTO) van en rojo y negrita**, con el umbral que
+tenía la alarma al dispararse; la discrepancia entre sensores no se marca. Lleva una primera hoja de resumen con el logo de SPEAL, pequeño, arriba a la derecha (el nombre del equipo queda a su izquierda) (rango, estadísticas
+de cada sensor, intervalo de guardado, alertas, estado de la cadena de auditoría; no muestra la versión del software ni el modelo o la serie de los sensores) y, al final, las alarmas de oxígeno del rango y el estado de los sensores (cuándo se apagaron, encendieron o quedaron sin señal; explica las celdas con «—»).
+El nombre del archivo no lleva el nombre del equipo (es la contraseña): `G2_reporte_2026-10-21_a_2026-10-27_20261027-1015.pdf`.
+
+**Qué escribe la Pi:**
+
+| Componente | Ejemplo |
+|---|---|
+| `v_desde`, `v_hasta` | `Desde: 21/10/2026`, `Hasta: 27/10/2026` |
+| `i2` | `7 día(s) · 40320 registros por sensor`, `Máximo 7 días por reporte` (rojo), `Sin registros en esas fechas` (rojo) |
+| `i1` | `Memoria USB «ANZD-600226001» lista`, `Inserte la memoria USB llamada «ANZD-600226001»` (rojo) |
+| `b_generar` | `Generar reporte` o `Generando...` |
+| `barra` (`val`) y `prog` | `40` y `Dibujando páginas... 40 %` (solo mientras corre) |
+| `res` | `No toque la pantalla ni retire la memoria USB` (aviso, mientras corre), `Listo: 40320 filas, 730 págs. Huella b3ae8fcc33fe`, `Reporte cancelado`, `La memoria USB se llama «X»; debe llamarse «...»` (rojo) |
+
+Un reporte de una semana con un guardado cada 15 s son unas 40 000 filas (~730 páginas) y tarda unos 30 s en la Raspberry Pi.
+
+**Teclado de fechas:** reutiliza la página `teclado` (sección 7): la Pi escribe `teclado.titulo.txt` = `Fecha del reporte` y
+`teclado.t_titulo.txt` = `Desde (día/mes/año)` o `Hasta (día/mes/año)`. No hace falta cambiar nada en el `.HMI` (la tecla del
+punto no hace nada en este modo).
+
+## 17. Página `calibracion` (PP = 04)
+
+Calibración de **un punto de un sensor con gas patrón** (D-048, D-049): el punto **bajo** (0,0 % de nitrógeno, o el aire a 20,9 %) corrige el
+cero y el punto **alto** (98,0 %, 99,8 % u otro valor que se teclea) corrige la ganancia (la pendiente). Se abre desde `principal`
+(botón `b_calib`, que ya existe). **Fondo:** `interna.png` (`fondo`, `pic` = 1). Botones con `style` = flat, `sta` = solid color y
+`pco2` = `pco`; los textos con `sta` = solid color y `bco` = tarjeta, salvo `titulo` (crop image, `picc` = 1).
+**Esta versión reemplaza a la primera de la sección (que solo calibraba el cero en aire con un botón por sensor).**
+
+| Nombre | Tipo | x | y | w | h | Fuente | Texto inicial | pco | bco | `txt_maxl` / notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `titulo` | Text | 138 | 8 | 500 | 40 | 1 | Calibración | blanco | crop image (`picc` 1) | 30; centrado |
+| `v_s1` | Button | 32 | 84 | 360 | 56 | 4 | Sensor 1  20.9 % | texto | boton | 24; `bco2` = boton_pulsado; elige el Sensor 1 (la Pi pinta `bco` del elegido) |
+| `v_s2` | Button | 408 | 84 | 360 | 56 | 4 | Sensor 2  20.9 % | texto | boton | 24; `bco2` = boton_pulsado; elige el Sensor 2 |
+| `b_bajo` | Button | 32 | 148 | 176 | 56 | 4 | Bajo 0.0 % | texto | boton | `bco2` = boton_pulsado; el gas pasa a 0,0 % |
+| `b_aire` | Button | 216 | 148 | 176 | 56 | 4 | Aire 20.9 % | texto | boton | `bco2` = boton_pulsado; el gas pasa a 20,9 % |
+| `v_gas` | Button | 408 | 148 | 360 | 56 | 4 | Gas: 0.0 % | texto | boton | 24; `bco2` = boton_pulsado; abre el teclado numérico para escribir otro valor |
+| `i1` | Text | 32 | 212 | 736 | 36 | 0 | (vacío) | texto | tarjeta | 60; `xcen`=0; qué se va a calibrar (sensor, gas y punto), o qué sensor se calibra |
+| `i2` | Text | 32 | 252 | 736 | 36 | 0 | (vacío) | texto | tarjeta | 60; `xcen`=0; la calibración vigente del sensor elegido, o la variación de la señal |
+| `i3` | Text | 32 | 292 | 736 | 36 | 0 | (vacío) | texto | tarjeta | 60; `xcen`=0; indicación, o el tiempo transcurrido |
+| `barra` | Progress bar | 32 | 334 | 736 | 24 | | | pco = normal (1128) | bco = boton | `val` = 0; la Pi escribe `val` de 0 a 100 (tiempo usado del máximo) |
+| `res` | Text | 32 | 362 | 736 | 36 | 0 | (vacío) | texto_suave | tarjeta | **80**; `xcen`=0; resultado (rojo si falló) |
+| `b_iniciar` | Button | 32 | 404 | 360 | 56 | 4 | Calibrar este punto | texto | boton | 24; `bco2` = boton_pulsado; la Pi lo cambia a `Calibrando...` mientras corre |
+| `b_volver` | Button | 408 | 404 | 360 | 56 | 4 | Volver | texto | boton | `bco2` = boton_pulsado |
+
+**Eventos** (`printh 65 04 CC 00 FF FF FF` al soltar; además `play 1,0,0` en *Touch Press*): `v_s1` = `01`, `v_s2` = `02`, `b_bajo` = `03`,
+`b_aire` = `04`, `v_gas` = `05`, `b_iniciar` = `06`, `b_volver` = `07`, página cargada = `FE`.
+
+**Cómo se usa (todo lo decide la Pi):**
+
+1. Se conecta al sensor el **gas patrón** (o se deja al aire). Se elige el sensor (`v_s1` o `v_s2`) y el gas: `b_bajo` (0,0 %), `b_aire`
+   (20,9 %) o `v_gas`, que abre el **teclado numérico** (sección 7) para escribir la concentración (de 0 a 100 %, con punto decimal: `99.8`).
+   Elegir no pide PIN ni cambia nada. `i1` dice a qué punto corresponde: **menos de 50 % es el punto bajo (corrige el cero); 50 % o más es el
+   punto alto (corrige la ganancia)**.
+2. `b_iniciar` pide el **PIN** y una **confirmación** (página `confirmar`: `¿Calibrar el Sensor 2 con gas de 99.8 %?`) y ordena la calibración
+   al núcleo. Solo **un sensor a la vez**, y solo si **el otro sigue encendido** (queda vigilando); si no, la Pi lo dice en `res` y no pide el PIN.
+3. **Cada punto se calibra por separado** y en cualquier orden. La calibración vigente del sensor se compone con el último punto bajo y el
+   último punto alto medidos: con los dos, el equipo corrige cero y ganancia; con solo el bajo, el cero (ganancia 1); con solo el alto, la
+   ganancia (cero 0). `i2` muestra lo vigente (`Vigente: gan. 1.005  cero -0.20 %  bajo 0  alto 98`; `--` es un punto sin medir). Volver a medir un
+   punto reemplaza al anterior de su lado.
+4. El núcleo mide: espera una señal **estable** (variación de 0,3 % o menos durante 30 s) y promedia esos 30 s. Tarda desde ~30 s hasta **5 minutos**.
+5. La calibración **falla y no se aplica nada** si la ganancia queda fuera de **0,90 a 1,10**, si el cero pasa de **±3 %**, si los dos puntos
+   distan menos de **50 puntos**, o si la señal no se estabiliza. Casi siempre es que el sensor no tenía el gas indicado. Queda registrada como fallida.
+6. **Mientras dura**, las alarmas y las lecturas guardadas de **ese sensor** se suspenden (el otro sigue vigilado, con sus alarmas, relevos y
+   sonido), la principal muestra `CALIBRANDO` (azul) en su recuadro y suena la voz **«Calibrando»** cada pocos segundos (sección 6). Una
+   alarma del otro sensor tiene prioridad en el sonido.
+7. **Bloqueo de la pantalla (igual que en reportes, D-045):** desde que se confirma hasta que termina la pantalla **no atiende ningún toque**
+   (`tsw 255,0`, que la Pi repite en cada carga de página y devuelve con `tsw 255,1` al terminar) y no hay botón Cancelar. Si el núcleo
+   deja de responder o se corta la luz, se libera sola. El tope de 5 minutos hace que nunca sea indefinido.
+
+**Qué escribe la Pi:**
+
+| Componente | Ejemplo |
+|---|---|
+| `v_s1`, `v_s2` | `Sensor 1  20.9 %`, `Sensor 2  APAGADO`, `Sensor 2  SIN SENSOR`; `bco` = boton_pulsado el elegido; en `pco` = inactivo mientras calibra |
+| `b_bajo`, `b_aire` | `bco` = boton_pulsado si su valor es el gas elegido |
+| `v_gas` | `Gas: 98.0 %`, `Gas: 99.95 %` |
+| `i1`, `i2`, `i3` (en reposo) | `Sensor 1 con gas de 98.0 %: punto alto (corrige la ganancia)`; `Vigente: de fábrica (sin calibrar)`; `Ponga el gas y toque Calibrar. Tarda de 1 a 5 min.` |
+| `i1`, `i2`, `i3` (calibrando) | `Calibrando Sensor 1 con gas de 98.0 %`; `Variación 1.80 % (debe bajar de 0.30 %)` o `Esperando una señal estable...`; `Tiempo 45 s de 300 s como máximo` |
+| `barra` (`val`) | `15` (solo mientras calibra) |
+| `b_iniciar` | `Calibrar este punto` o `Calibrando...` |
+| `res` | `No toque la pantalla ni mueva el sensor` (aviso, mientras calibra); al terminar: `Sensor 1: Punto alto 98 % listo: gan. 1.005, cero +0.00 %`, o en rojo `Sensor 1: Mide 90.1 % con gas de 0 %. Cero -90.1 % pasa de ±3: ¿gas correcto?`; `El Sensor 2 no está activo`, `Encienda el otro sensor: debe seguir vigilando` (rojo) |
+
+**Teclado del gas:** reutiliza la página `teclado` (sección 7): la Pi escribe `teclado.titulo.txt` = `Gas patrón` y `teclado.t_titulo.txt` =
+`Concentración de O2 (%)`; la tecla del punto sí funciona en este modo. No hace falta cambiar nada en el `.HMI`. **Confirmar:** reutiliza la
+página `confirmar` (sección 9). El recuadro de estado de la principal ya trae el color `calibrando` (726) y el texto `CALIBRANDO` (secciones 4 y 5).
+
+## 18. Cómo probar lo construido
 
 1. En el editor, botón **Debug**: simula la pantalla sin dispositivo para revisar el diseño.
 2. Guardar y **Compile**: genera el `.tft` (ruta en *File → Open build folder*).
@@ -621,6 +766,6 @@ hasta que la pantalla se reinicie.
 4. Conectar la pantalla a la Pi y correr `tools/banco/sonda_nextion.py` (debe responder el modelo).
 5. Probar los eventos con el emulador y con la pantalla real.
 
-## 17. Páginas que faltan (etapas siguientes)
+## 19. Páginas que faltan (etapas siguientes)
 
-reportes (exportar a memoria USB, desde `sistema`) y calibracion (guiada, con los métodos SPOC y de ajuste de cero).
+Ninguna por ahora. Queda para más adelante el método SPOC guiado del fabricante (D-039), que usa el botón físico del sensor y solo se registra.

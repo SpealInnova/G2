@@ -13,6 +13,7 @@ from pathlib import Path
 from g2.almacenamiento import auditoria, base
 from g2.almacenamiento.almacen import Almacen
 from g2.configuracion import catalogo
+from g2.reportes import consulta, usb
 
 REGISTRO = logging.getLogger("g2.pantalla")
 CLAVES_ALARMAS = ("alarma.o2_bajo_pct", "alarma.o2_alto_pct", "alarma.o2_retardo_s",
@@ -88,6 +89,50 @@ class DatosPantalla:
         except sqlite3.Error as error:
             self._fallo(error)
             return []
+
+    def calibraciones_vigentes(self) -> dict[int, dict]:
+        """La calibracion vigente de cada sensor que tiene una (cero, ganancia y los dos gases patron); sin ella rige la de fabrica."""
+        almacen = self._abrir()
+        if almacen is None:
+            return {}
+        try:
+            return {f["sensor_id"]: dict(f) for f in almacen.db.execute(
+                "SELECT sensor_id, offset_pct, ganancia, bajo_ref_pct, alto_ref_pct FROM calibracion WHERE vigente = 1")}
+        except sqlite3.Error as error:
+            self._fallo(error)
+            return {}
+
+    def zona_horaria(self) -> str:
+        """La zona horaria de los reportes (``reporte.zona_horaria``)."""
+        almacen = self._abrir()
+        if almacen is not None:
+            try:
+                return almacen.config_obtener("reporte.zona_horaria") or catalogo.obtener("reporte.zona_horaria").defecto
+            except (sqlite3.Error, KeyError) as error:
+                self._fallo(error)
+        return catalogo.obtener("reporte.zona_horaria").defecto
+
+    def contar_registros(self, inicio_ms: int, fin_ms: int) -> int | None:
+        """Filas que tendria un reporte de ese rango (``None`` si no se puede leer la base)."""
+        almacen = self._abrir()
+        if almacen is None:
+            return None
+        try:
+            return consulta.contar(almacen.db, inicio_ms, fin_ms)
+        except sqlite3.Error as error:
+            self._fallo(error)
+            return None
+
+    def estado_usb(self, nombre: str) -> tuple[str, bool]:
+        """``(texto, lista)``: si hay una memoria USB con el nombre del equipo. Llama a ``lsblk``: la interfaz la corre en
+        segundo plano."""
+        if not nombre:
+            return "Defina el nombre del equipo (pagina Config)", False
+        try:
+            particion = usb.buscar(nombre)
+        except usb.ErrorUsb as error:
+            return str(error), False
+        return f"Memoria USB «{particion.etiqueta}» lista", True
 
     def verificar_auditoria(self) -> tuple[bool, int]:
         """Verifica la cadena de auditoria de TODA la base: ``(correcta, numero_de_diferencias)``. Puede tardar

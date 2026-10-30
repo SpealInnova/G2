@@ -25,10 +25,13 @@ from g2.almacenamiento.almacen import Almacen
 from g2.configuracion.catalogo import ErrorConfig
 from g2.nucleo import senal
 from g2.nucleo.alarmas import ORIGEN, MotorAlarmas, Umbrales
+from g2.nucleo.calibracion import CalibracionPunto, Punto, Puntos, ResultadoCalibracion
 from g2.nucleo.fuentes import FuenteTension
 from g2.nucleo.salud import Medidor, ObservadorSalud
 from g2.nucleo.servicio_red import ServicioRed
+from g2.nucleo.servicio_reportes import ServicioReportes
 from g2.red.gestor import ErrorRed, redactar, validar_credenciales
+from g2.reportes import rango as rango_reporte
 from g2.nucleo.salidas import SalidasAlarma, SalidasEmuladas
 
 
@@ -41,6 +44,7 @@ class SensorActivo:
     canal: str
     mv_por_pct: float
     offset_pct: float
+    ganancia: float = 1.0
     acumulador: senal.Acumulador = field(default_factory=senal.Acumulador)
 
 
@@ -51,7 +55,8 @@ class Nucleo:
                  mono: Callable[[], float] = time.monotonic, version_sw: str = __version__,
                  medidor: Medidor | None = None,
                  ejecutor: Callable[[list[str]], None] | None = None,
-                 servicio_red: ServicioRed | None = None) -> None:
+                 servicio_red: ServicioRed | None = None,
+                 servicio_reportes: ServicioReportes | None = None) -> None:
         """``medidor``: mide la salud de la Pi (sin el, no se registra ni se alarma por la salud; asi las
         pruebas no dependen de la maquina). ``ejecutor``: lanza un comando del sistema (reiniciar); en
         las pruebas se sustituye para no reiniciar nada."""
@@ -64,6 +69,13 @@ class Nucleo:
         self._ejecutar = ejecutor or _lanzar
         self.red = servicio_red
         self._cambio_red: tuple[int, str] | None = None           # (id del comando, nombre de la red) en curso
+        self.reportes = servicio_reportes
+        self._reporte: tuple[int, str, str] | None = None         # (id del comando, desde, hasta) del reporte en curso
+        self._enlace_plataforma: str | None = None                # ultimo estado del enlace que aviso g2-uplink
+        self.calibracion: CalibracionPunto | None = None          # la calibracion de un punto en curso (D-048, D-049)
+        self._calib_o2: float | None = None                       # lo que mide ahora el sensor que se calibra
+        self._ultima_calibracion: dict | None = None
+        self._n_calibraciones = 0                                 # cuenta las terminadas: la pantalla sabe cual es nueva
         self.sensores: list[SensorActivo] = []
         self._todos: list[dict] = []                    # filas de la tabla sensor (tambien los apagados)
         self.motor: MotorAlarmas | None = None
@@ -73,16 +85,20 @@ class Nucleo:
         self._ultima_config_s = float("-inf")
 
     # ------------------------------------------------------------------ arranque y cierre
-    def iniciar(self) -> bool:
+    def iniciar(self, aviso_reinicio: str | None = None) -> bool:
         """Registra el arranque, retoma las alarmas abiertas y deja todo listo.
 
         Devuelve True si el cierre anterior fue ordenado. Si no lo fue, el arranque lleva la razon
         ``SYS_REINICIO_ANORMAL`` y se deja un evento (watchdog, corte de energia o falla del programa).
+        ``aviso_reinicio`` es la nota que deja g2-uplink cuando reinicia al nucleo por no responder (D-012): la razon del
+        arranque pasa a ser ``SVC_BLOQUEO_DETECTADO`` y se anota un evento con ella.
         """
         limpio = self.a.config_obtener("sistema.apagado_limpio") == "1"
-        self.a.registrar_arranque(version_sw=self.version_sw,
-                                  razon="SYS_ARRANQUE" if limpio else "SYS_REINICIO_ANORMAL")
+        razon = "SVC_BLOQUEO_DETECTADO" if aviso_reinicio else "SYS_ARRANQUE" if limpio else "SYS_REINICIO_ANORMAL"
+        self.a.registrar_arranque(version_sw=self.version_sw, razon=razon)
         self.a.iniciar_sesion()
+        if aviso_reinicio:
+            self.a.registrar_evento("SVC_BLOQUEO_DETECTADO", ORIGEN, mensaje=aviso_reinicio)
         if not limpio:
             self.a.registrar_evento("SYS_REINICIO_ANORMAL", ORIGEN,
                                     mensaje="El cierre anterior del núcleo no fue ordenado")
@@ -104,6 +120,7 @@ class Nucleo:
 
     def cerrar(self) -> None:
         """Cierre ordenado: guarda lo que haya del intervalo en curso y marca el apagado limpio."""
+        self._cancelar_calibracion("el nucleo se detuvo")        # (no hace nada si no hay una en curso)
         self._guardar_periodo(self._mono())
         if self.motor is not None:
             self.motor.guardar_picos()                 # los extremos de las alarmas que sigan abiertas
@@ -117,14 +134,15 @@ class Nucleo:
         for fila in self._todos:
             if not fila["habilitado"]:
                 continue
-            offset = self.a.db.execute(
-                "SELECT COALESCE(offset_pct, 0.0) FROM calibracion WHERE sensor_id = ? AND vigente = 1",
-                (fila["id"],)).fetchone()
+            vigente = self.a.db.execute(
+                "SELECT COALESCE(offset_pct, 0.0) AS cero, COALESCE(ganancia, 1.0) AS ganancia FROM calibracion "
+                "WHERE sensor_id = ? AND vigente = 1", (fila["id"],)).fetchone()
             sensor = previos.get(fila["id"]) or SensorActivo(
                 fila["id"], fila["nombre"], fila["canal"], fila["mv_por_pct"], 0.0)
             sensor.nombre, sensor.canal = fila["nombre"], fila["canal"]
             sensor.mv_por_pct = fila["mv_por_pct"]
-            sensor.offset_pct = float(offset[0]) if offset else 0.0
+            sensor.offset_pct = float(vigente["cero"]) if vigente else 0.0
+            sensor.ganancia = float(vigente["ganancia"]) if vigente else 1.0
             nuevos.append(sensor)
         self.sensores = nuevos
 
@@ -138,13 +156,22 @@ class Nucleo:
             self.umbrales = Umbrales.desde_almacen(self.a)
             self._ultima_config_s = ahora
         valores: dict[int, float | None] = {}
+        terminada: ResultadoCalibracion | None = None
         for sensor in self.sensores:
             tension = self.fuente.leer(sensor.canal)
+            if self.calibracion is not None and self.calibracion.sensor_id == sensor.id:
+                # El sensor que se calibra no se mide ni se vigila: su muestra va a la calibracion, no al promedio, y al
+                # quedar fuera de ``valores`` el motor cierra y suspende sus alarmas hasta que termine.
+                self._calib_o2 = None if tension is None else senal.tension_a_pct(
+                    tension, sensor.mv_por_pct, sensor.offset_pct, sensor.ganancia)
+                sensor.acumulador.agregar_calibrando()
+                terminada = self.calibracion.agregar(ahora, None if tension is None else tension * 1000.0)
+                continue
             if tension is None:
                 sensor.acumulador.agregar_sin_dato()
                 valores[sensor.id] = None
             else:
-                o2 = senal.tension_a_pct(tension, sensor.mv_por_pct, sensor.offset_pct)
+                o2 = senal.tension_a_pct(tension, sensor.mv_por_pct, sensor.offset_pct, sensor.ganancia)
                 sensor.acumulador.agregar(o2, tension * 1000.0)
                 valores[sensor.id] = o2
         self._valores = valores
@@ -153,6 +180,9 @@ class Nucleo:
         if self.salud is not None:
             cambios += self.salud.paso(ahora)
         self._atender_red()
+        self._atender_reporte()
+        if terminada is not None:
+            self._terminar_calibracion(terminada, ahora)
         if ahora - self._inicio_periodo_s >= float(self.a.config_tipada("muestreo.intervalo_guardado_s")):
             self._guardar_periodo(ahora)
             self._cargar_sensores()                   # tambien recoge cambios de habilitado o de calibracion
@@ -184,6 +214,9 @@ class Nucleo:
         existia no se ejecuta otra vez (idempotente). Hoy el unico tipo es ``acusar``."""
         if not isinstance(orden, dict) or "uuid" not in orden or "tipo" not in orden:
             return                                              # orden mal formada: se ignora
+        if orden["tipo"] == "cola_resultado":
+            self._registrar_envio(orden)                        # contabilidad de g2-uplink: no es un comando
+            return
         origen = orden.get("origen") if orden.get("origen") in ("pantalla", "plataforma", "local") else "local"
         # Las contrasenas NUNCA se guardan: el registro de comandos se sincroniza con la plataforma y entra a la
         # cadena de auditoria. Se guarda ``***`` en su lugar (ver g2.red.gestor.redactar).
@@ -209,6 +242,20 @@ class Nucleo:
             self._registrar_auditoria(comando_id, orden, origen)
         elif orden["tipo"] == "red_configurar":
             self._configurar_red(comando_id, orden, origen, actor)
+        elif orden["tipo"] == "reporte_generar":
+            self._generar_reporte(comando_id, orden, origen, actor)
+        elif orden["tipo"] == "reporte_cancelar":
+            cancelado = self.reportes is not None and self.reportes.cancelar()
+            self.a.finalizar_comando(comando_id, "ok" if cancelado else "rechazado",
+                                     None if cancelado else {"motivo": "no hay un reporte en curso"})
+        elif orden["tipo"] == "calibrar_punto":
+            self._iniciar_calibracion(comando_id, orden, origen, actor)
+        elif orden["tipo"] == "calibrar_cancelar":
+            if self.calibracion is None:
+                self.a.finalizar_comando(comando_id, "rechazado", {"motivo": "no hay una calibracion en curso"})
+            else:
+                self._cancelar_calibracion(f"cancelada por {origen}:{actor}")
+                self.a.finalizar_comando(comando_id, "ok")
         elif orden["tipo"] == "red_buscar":
             if self.red is None:
                 self.a.finalizar_comando(comando_id, "rechazado", {"motivo": "la red no esta disponible"})
@@ -218,6 +265,33 @@ class Nucleo:
         else:
             self.a.finalizar_comando(comando_id, "rechazado",
                                      {"motivo": f"tipo de orden desconocido: {orden['tipo']}"})
+
+    ESTADOS_ENLACE = ("ok", "sin_enlace", "credencial")
+
+    def _registrar_envio(self, orden: dict) -> None:
+        """``g2-uplink`` avisa que paso con un envio a la plataforma y como esta el enlace. Es CONTABILIDAD de la cola, no un
+        comando: no se guarda en ``comando`` (si no, cada envio dejaria un registro que a su vez hay que enviar, sin fin).
+        Repetir el aviso no cambia nada. El enlace deja un evento solo cuando CAMBIA (perdido, restablecido, credencial)."""
+        def ids(valor) -> list[int]:
+            return [i for i in valor if isinstance(i, int) and not isinstance(i, bool)] if isinstance(valor, list) else []
+
+        def motivos(valor) -> dict[int, str]:
+            return {int(i): str(m) for i, m in valor.items() if str(i).isdigit()} if isinstance(valor, dict) else {}
+
+        self.a.cola_resultado(confirmados=ids(orden.get("confirmados")), rechazados=motivos(orden.get("rechazados")),
+                              fallidos=motivos(orden.get("fallidos")))
+        enlace = orden.get("enlace")
+        if enlace not in self.ESTADOS_ENLACE or enlace == self._enlace_plataforma:
+            return
+        anterior, self._enlace_plataforma = self._enlace_plataforma, enlace
+        detalle = str(orden.get("detalle") or "")[:200] or None
+        if enlace == "ok":
+            if anterior is not None:                                # al arrancar con enlace no hay nada que contar
+                self.a.registrar_evento("PLAT_ENLACE_RESTABLECIDO", "g2-uplink")
+        elif enlace == "sin_enlace":
+            self.a.registrar_evento("PLAT_ENLACE_PERDIDO", "g2-uplink", mensaje=detalle)
+        else:
+            self.a.registrar_evento("PLAT_CREDENCIAL_RECHAZADA", "g2-uplink", mensaje=detalle)
 
     def _registrar_resultado_pin(self, comando_id: int, orden: dict) -> None:
         """La interfaz verifica el PIN (nunca lo manda) y solo AVISA el resultado, para dejarlo como
@@ -253,6 +327,9 @@ class Nucleo:
         existentes = {s["id"]: s for s in self.a.listar_sensores()}
         if not isinstance(sensor_id, int) or sensor_id not in existentes or not isinstance(habilitar, bool):
             self.a.finalizar_comando(comando_id, "rechazado", {"motivo": "sensor o valor invalido"})
+            return
+        if self.calibracion is not None and self.calibracion.sensor_id == sensor_id:
+            self.a.finalizar_comando(comando_id, "rechazado", {"motivo": "el sensor se esta calibrando"})
             return
         if not habilitar and sum(1 for s in existentes.values() if s["habilitado"] and s["id"] != sensor_id) == 0:
             self.a.finalizar_comando(comando_id, "rechazado",
@@ -327,6 +404,146 @@ class Nucleo:
             self.a.finalizar_comando(comando_id, "ok" if resultado.ok else "error",
                                      {"mensaje": resultado.mensaje, **datos})
 
+    def _generar_reporte(self, comando_id: int, orden: dict, origen: str, actor: str) -> None:
+        """Pide un reporte PDF de ``desde`` a ``hasta`` (dias completos, maximo una semana). El nucleo valida lo que
+        solo el sabe (nombre del equipo, fechas, que no haya otro en curso) y lanza el proceso; el comando queda
+        ``recibido`` hasta que ``_atender_reporte`` recoge el resultado y lo cierra."""
+        if self.reportes is None:
+            self.a.finalizar_comando(comando_id, "rechazado", {"motivo": "los reportes no estan disponibles"})
+            return
+        try:
+            desde, hasta = rango_reporte.leer_fecha(str(orden.get("desde", ""))), rango_reporte.leer_fecha(str(orden.get("hasta", "")))
+            rango_reporte.validar(desde, hasta, rango_reporte.hoy(self.a.config_obtener("reporte.zona_horaria")))
+        except rango_reporte.ErrorRango as error:
+            self.a.finalizar_comando(comando_id, "rechazado", {"motivo": str(error)})
+            return
+        if not self.a.config_obtener("equipo.nombre").strip():
+            self.a.finalizar_comando(comando_id, "rechazado",
+                                     {"motivo": "el equipo no tiene nombre (es la contraseña del reporte)"})
+            return
+        if not self.reportes.iniciar(desde.isoformat(), hasta.isoformat()):
+            self.a.finalizar_comando(comando_id, "rechazado", {"motivo": "ya hay un reporte en curso"})
+            return
+        self._reporte = (comando_id, desde.isoformat(), hasta.isoformat())
+
+    def _atender_reporte(self) -> None:
+        """Vigila el reporte y, al terminar, deja su resultado como evento y cierra el comando (el proceso no escribe)."""
+        if self.reportes is None:
+            return
+        self.reportes.vigilar()
+        terminado = self.reportes.resultado_pendiente()
+        if terminado is None:
+            return
+        comando_id = self._reporte[0] if self._reporte is not None else None
+        self._reporte = None
+        datos = {k: terminado[k] for k in ("desde", "hasta", "archivo", "sha256", "filas", "paginas", "cadena_integra",
+                                           "desmontada") if k in terminado}
+        if terminado["ok"]:
+            self.a.registrar_evento("REPORTE_GENERADO", ORIGEN, mensaje=f"Reporte {terminado['desde']} a {terminado['hasta']}: "
+                                    f"{terminado['archivo']}", datos=datos)
+            estado = "ok"
+        elif terminado.get("cancelado"):
+            self.a.registrar_evento("REPORTE_CANCELADO", ORIGEN, mensaje="Reporte cancelado", datos=datos or None)
+            estado = "error"
+        else:
+            self.a.registrar_evento("REPORTE_FALLIDO", ORIGEN, mensaje=terminado["mensaje"][:200],
+                                    datos={"desde": terminado["desde"], "hasta": terminado["hasta"]})
+            estado = "error"
+        if comando_id is not None:
+            self.a.finalizar_comando(comando_id, estado, {"mensaje": terminado["mensaje"], **datos})
+
+    # ------------------------------------------------------------------ calibracion por puntos (D-048, D-049)
+    def _iniciar_calibracion(self, comando_id: int, orden: dict, origen: str, actor: str) -> None:
+        """Empieza la calibracion de UN punto de UN sensor con un gas patron (``referencia_pct``, de 0 a 100). Se rechaza si ya
+        hay otra o un reporte en curso, si el sensor no esta habilitado, o si no quedaria otro sensor vigilando (con las alarmas
+        del calibrado suspendidas, el equipo quedaria sin vigilancia: misma regla que impide apagar el ultimo sensor). El comando
+        queda ``recibido`` hasta que termina."""
+        def rechazar(motivo: str) -> None:
+            self.a.finalizar_comando(comando_id, "rechazado", {"motivo": motivo})
+
+        sensor_id, referencia = orden.get("sensor_id"), orden.get("referencia_pct")
+        sensor = next((s for s in self.sensores if s.id == sensor_id), None) if isinstance(sensor_id, int) else None
+        if sensor is None:
+            return rechazar("sensor invalido o apagado")
+        if isinstance(referencia, bool) or not isinstance(referencia, (int, float)) or not 0.0 <= referencia <= 100.0:
+            return rechazar("la concentracion del gas patron debe estar entre 0 y 100 %")
+        if self.calibracion is not None:
+            return rechazar("ya hay una calibracion en curso")
+        if self.reportes is not None and self.reportes.estado().get("en_curso"):
+            return rechazar("se esta generando un reporte")
+        if not any(s.id != sensor.id for s in self.sensores):
+            return rechazar("encienda el otro sensor: mientras se calibra uno, el otro debe seguir vigilando")
+        self._guardar_periodo(self._mono())                       # el tramo anterior se cierra: no se mezcla con la calibracion
+        self._calib_o2 = None
+        self.calibracion = CalibracionPunto(
+            sensor_id=sensor.id, nombre=sensor.nombre, mv_por_pct=sensor.mv_por_pct, referencia_pct=float(referencia),
+            previos=self._puntos_vigentes(sensor.id), ahora_s=self._mono(), comando_id=comando_id, actor=actor, origen=origen)
+        self.a.registrar_evento("CAL_INICIADA", ORIGEN, sensor_id=sensor.id,
+                                mensaje=f"Calibracion de {sensor.nombre} con gas de {float(referencia):g} % pedida por {origen}:{actor}")
+
+    def _puntos_vigentes(self, sensor_id: int) -> Puntos:
+        """Los dos puntos con los que se calculo la calibracion vigente (lo que se conserva al medir el otro punto)."""
+        fila = self.a.calibracion_vigente_fila(sensor_id)
+        if fila is None:
+            return Puntos()
+
+        def punto(ref, mv) -> Punto | None:
+            return Punto(float(ref), float(mv)) if ref is not None and mv is not None else None
+
+        return Puntos(bajo=punto(fila["bajo_ref_pct"], fila["bajo_mv"]), alto=punto(fila["alto_ref_pct"], fila["alto_mv"]))
+
+    def _terminar_calibracion(self, resultado: ResultadoCalibracion, ahora_s: float) -> None:
+        """Deja la calibracion registrada (vigente si salio bien; un fallo tambien queda, sin aplicarse), cierra el tramo
+        de lecturas marcado como calibracion y vuelve a cargar la calibracion vigente."""
+        cal, self.calibracion = self.calibracion, None
+        if cal is None:
+            return
+        self._guardar_periodo(ahora_s)
+        recta = resultado.recta
+        puntos = recta.puntos if recta is not None else Puntos()
+        self.a.registrar_calibracion(
+            sensor_id=cal.sensor_id, tipo="puntos", origen=cal.origen, actor=cal.actor, resultado="ok" if resultado.ok else "fallo",
+            gas_pct=resultado.referencia_pct, gas_certificado=None, mv_antes=resultado.mv_prom,
+            mv_despues=resultado.referencia_pct * cal.mv_por_pct if resultado.mv_prom is not None else None,
+            offset_pct=resultado.offset_pct, ganancia=resultado.ganancia, vigente=resultado.ok, comando_id=cal.comando_id,
+            notas=resultado.motivo[:200],
+            bajo_ref_pct=puntos.bajo.referencia_pct if puntos.bajo else None, bajo_mv=puntos.bajo.mv if puntos.bajo else None,
+            alto_ref_pct=puntos.alto.referencia_pct if puntos.alto else None, alto_mv=puntos.alto.mv if puntos.alto else None)
+        self._finalizar_calibracion(cal, resultado.ok, resultado.motivo, resultado.breve, resultado.offset_pct, resultado.ganancia,
+                                    {"referencia_pct": resultado.referencia_pct, "casilla": resultado.casilla,
+                                     "duracion_s": round(resultado.duracion_s)})
+
+    def _finalizar_calibracion(self, cal: CalibracionPunto, ok: bool, mensaje: str, breve: str, cero: float | None,
+                               ganancia: float | None, datos: dict) -> None:
+        datos = {"sensor_id": cal.sensor_id, "offset_pct": cero, "ganancia": ganancia, **datos}
+        self.a.registrar_evento("CAL_REGISTRADA" if ok else "CAL_FALLIDA", ORIGEN, sensor_id=cal.sensor_id,
+                                mensaje=f"{cal.nombre}: {mensaje}"[:300], datos=datos)
+        self._cargar_sensores()                               # recoge la calibracion nueva
+        self._n_calibraciones += 1
+        self._ultima_calibracion = {"numero": self._n_calibraciones, "sensor_id": cal.sensor_id, "nombre": cal.nombre,
+                                    "ok": ok, "mensaje": breve, "offset_pct": cero, "ganancia": ganancia,
+                                    "referencia_pct": cal.referencia_pct}
+        if cal.comando_id is not None:
+            self.a.finalizar_comando(cal.comando_id, "ok" if ok else "error", {"mensaje": mensaje, **datos})
+
+    def _cancelar_calibracion(self, motivo: str) -> None:
+        cal, self.calibracion = self.calibracion, None
+        if cal is None:
+            return
+        self._guardar_periodo(self._mono())
+        self.a.registrar_evento("CAL_CANCELADA", ORIGEN, sensor_id=cal.sensor_id, mensaje=f"{cal.nombre}: {motivo}")
+        self._n_calibraciones += 1
+        self._ultima_calibracion = {"numero": self._n_calibraciones, "sensor_id": cal.sensor_id, "nombre": cal.nombre,
+                                    "ok": False, "cancelada": True, "mensaje": "Calibración cancelada", "offset_pct": None,
+                                    "ganancia": None, "referencia_pct": cal.referencia_pct}
+        if cal.comando_id is not None:
+            self.a.finalizar_comando(cal.comando_id, "error", {"motivo": motivo})
+
+    def _estado_calibracion(self, ahora_s: float) -> dict:
+        if self.calibracion is not None:
+            return {**self.calibracion.estado(ahora_s, self._calib_o2), "ultima": self._ultima_calibracion}
+        return {"en_curso": False, "ultima": self._ultima_calibracion}
+
     def _registrar_auditoria(self, comando_id: int, orden: dict, origen: str) -> None:
         """La interfaz verifica la cadena de auditoria (solo lectura) y AVISA el resultado para dejarlo registrado."""
         correcta = orden.get("correcta")
@@ -353,6 +570,8 @@ class Nucleo:
             sid = fila["id"]
             if sid not in habilitados:
                 estado, acusada, o2 = "APAGADO", False, None
+            elif self.calibracion is not None and self.calibracion.sensor_id == sid:
+                estado, acusada, o2 = "CALIBRANDO", False, self._calib_o2
             else:
                 estado, acusada = self.motor.estado_sensor(sid)
                 o2 = self._valores.get(sid)
@@ -361,6 +580,8 @@ class Nucleo:
                              "estado": estado, "acusada": acusada})
         ahora = self._mono()
         aviso = self.motor.texto_aviso()
+        if self.calibracion is not None:
+            aviso = f"Calibrando {self.calibracion.nombre}" + ("" if aviso == "Sin alarmas" else "  " + aviso)
         etiquetas = self.salud.etiquetas_activas() if self.salud is not None else []
         if etiquetas:                                   # las alarmas de la Pi se muestran, pero no suenan ni mueven relevos
             aviso = ("  ".join(etiquetas) if aviso == "Sin alarmas" else aviso + "  " + "  ".join(etiquetas))[:60]
@@ -370,7 +591,9 @@ class Nucleo:
                 "version_sw": self.version_sw,
                 "salud": self.salud.ultima.como_diccionario() if self.salud is not None else None,
                 "alertas_salud": self.salud.codigos_activos() if self.salud is not None else [],
-                "red": self.red.estado() if self.red is not None else None}
+                "red": self.red.estado() if self.red is not None else None,
+                "reporte": self.reportes.estado() if self.reportes is not None else None,
+                "calibracion": self._estado_calibracion(ahora)}
 
     # ------------------------------------------------------------------ ciclo continuo
     def ejecutar(self, detener: Callable[[], bool], *, periodo_s: float = 0.5,

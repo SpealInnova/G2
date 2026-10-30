@@ -15,9 +15,9 @@ Nextion y plataforma web **sp-peek.com**. Primera versión para **hospitales**.
 | Convertidor analógico-digital ADS1263 (controlador, emulador y herramientas de banco) | **Hecho**; validado con una fuente de prueba |
 | Raspberry Pi preparada (SPI, I²C, UART) y herramienta `g2ctl` | **Hecho** |
 | Núcleo `g2-core` (lectura, promedio, alarmas, almacenamiento) | Hecho como servicio de systemd con watchdog y probado con el ADC real; faltan los relevos por GPIO y la salud de la Pi |
-| Interfaz `g2-ui` de la pantalla | Hechas del lado de la Pi: principal, alarmas, config, sistema, confirmar, red y teclado de texto (PIN, acuse, reinicios, cambio de red con reversión); faltan reportes y calibración |
-| Servicio de envío a la plataforma | Por construir (diseño en la memoria técnica) |
-| Pantalla Nextion | Páginas principal, teclado y alarmas listas (v0.2.0); faltan configuración, red, calibración, sistema y reportes |
+| Interfaz `g2-ui` de la pantalla | Hechas del lado de la Pi: principal, alarmas, config, sistema, confirmar, red y teclado de texto (PIN, acuse, reinicios, cambio de red con reversión); reportes listos (PDF cifrado a USB); calibración por puntos con gas patrón (bajo y alto) lista del lado de la Pi y desplegada (D-049); falta probarla con gas patrón |
+| Servicio de envío `g2-uplink` | Hecho del lado del equipo (HTTPS por lotes con confirmación por registro y foto en vivo; apagado hasta activarlo) y probado con una plataforma simulada; además vigila a `g2-core` y lo reinicia si deja de responder (D-047); falta que la plataforma implemente el [contrato](CONTRATO_PLATAFORMA.md) |
+| Pantalla Nextion | Páginas hasta la gráfica listas (v0.4.0); falta construir las páginas de reportes y de calibración |
 | Alertas por correo en la plataforma | Construidas en una rama de la plataforma, sin publicar |
 
 ## Para empezar
@@ -38,6 +38,7 @@ emuladores.
 | `src/g2/configuracion/` | Catálogo de claves de configuración con sus valores por defecto |
 | `src/g2/hardware/` | Controlador del ADS1263, su emulador y el puerto SPI de la Raspberry Pi |
 | `src/g2/ctl.py` | Herramienta `g2ctl` para operar el equipo por SSH |
+| `src/g2/uplink/` | `g2-uplink`: envío de datos a la plataforma, cliente HTTPS y plataforma simulada para pruebas |
 | `tools/` | Generadores (cadena de auditoría, diagrama) y herramientas de banco del ADC |
 | `scripts/aprovisionar_pi.sh` | Prepara el sistema de la Raspberry Pi (repetible) |
 | `tests/` | Pruebas automáticas |
@@ -48,6 +49,7 @@ emuladores.
 - [Bitácora](BITACORA.md): registro cronológico del trabajo.
 - [Hardware](HARDWARE.md): diagrama de bloques, pines y direcciones I²C.
 - [Diagrama entidad-relación](DIAGRAMA_ER.md) de la base de datos.
+- [Contrato con la plataforma](CONTRATO_PLATAFORMA.md): lo que debe implementar `sp-peek.com` para recibir los datos del equipo.
 - [Contexto](CONTEXTO.md): lo aprendido del equipo anterior y la lista de mejoras.
 
 ## Novedades
@@ -57,9 +59,18 @@ publicados (no se edita a mano).
 
 <!-- NOVEDADES:INICIO -->
 
+### 2026-10-30
+
+- **Envío a la plataforma, reportes PDF y calibración por puntos con gas patrón (D-044 a D-049)**
+  - Calibración por puntos con gas patrón (D-048, D-049): punto bajo (0,0 % o aire) y punto alto (98,0 %, 99,8 % u otro valor tecleado), cada uno por separado; corrige cero y ganancia (O2 = ganancia x mV/10 + cero). Ganancia entre 0,…
+  - Mientras se calibra, ese sensor sale de la vigilancia (el otro sigue con alarmas y relevos), sus muestras quedan marcadas y la pantalla se bloquea con la voz «Calibrando». Un fallo no se aplica y queda registrado. Página calibrac…
+  - g2-uplink (D-046): servicio que envía los registros por HTTPS en lotes durables, con confirmación por registro, reintentos y foto en vivo; secreto propio de cada equipo y apagado por omisión. Contrato para la plataforma en CONTRA…
+  - g2-uplink vigila a g2-core (D-047): si deja de responder 2 minutos pide a systemd reiniciarlo (máximo 3 por hora) y el arranque queda registrado con su motivo. g2ctl cola-descartar deja de enviar lo pendiente sin borrar nada.
+  - Reportes PDF cifrados a memoria USB (D-044) con anexo de alarmas y de estado de los sensores, y pantalla bloqueada mientras se generan (D-045); el reporte muestra ganancia, cero y los gases de cada calibración. 828 pruebas, tambi…
+
 ### 2026-10-26
 
-- **Gráfica en tiempo de las dos señales (D-043) y pantalla Nextion v0.4.0**
+- **Gráfica en tiempo de las dos señales (D-043) y pantalla Nextion v0.4.0** (`f70c4dc`)
   - Gráfica de oxígeno contra tiempo con el componente Waveform de 4 canales (sensor 1, sensor 2 y los dos límites de alarma): se abre sola tras 10 s sin tocar la pantalla principal y un toque la cierra. Cubre unos 12 minutos con una…
   - La Pi manda: ordena sendxy=1 para saber de cualquier toque, dibuja con addt (con respaldo a add si la pantalla no responde) y vuelve sola a la principal si salta una alarma sin acusar o el núcleo deja de responder. Clave nueva pa…
   - Protecciones: si el .tft no trae la página o la pantalla rechaza sus órdenes, la gráfica se desactiva con un solo error en el registro; tras ordenar volver no se siguen mandando puntos.

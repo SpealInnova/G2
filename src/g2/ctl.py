@@ -192,6 +192,105 @@ def cmd_pin_estado(args) -> int:
     return 0
 
 
+def cmd_plataforma_credencial(args) -> int:
+    """Guarda el secreto del equipo ante la plataforma (D-046). Como el PIN, NUNCA va como argumento: se pide sin
+    mostrarlo, o con ``--desde-stdin`` se lee de la entrada. Queda en un archivo 0600 fuera de la base."""
+    import getpass
+    from g2.uplink import credencial
+    if args.desde_stdin:
+        secreto = sys.stdin.readline().strip()
+    else:
+        secreto = getpass.getpass("Secreto del equipo (el que entrega la plataforma): ")
+        if getpass.getpass("Repita el secreto: ") != secreto:
+            print("No coinciden: no se cambio nada.", file=sys.stderr)
+            return 2
+    try:
+        ruta = credencial.guardar(secreto)
+    except credencial.ErrorCredencial as error:
+        print(f"No se guardo el secreto: {error}", file=sys.stderr)
+        return 2
+    print(f"Secreto guardado en {ruta} (solo lo lee el usuario del servicio; no se registra en la base ni se muestra).")
+    return 0
+
+
+def cmd_plataforma_estado(args) -> int:
+    """Como esta el enlace con la plataforma: configuracion, credencial, cola y lo que dice g2-uplink."""
+    from g2 import ipc
+    from g2.uplink import credencial
+    almacen = _almacen_lectura(_ruta(args))
+    cfg = {c: almacen.config_obtener(c) for c in ("plataforma.activa", "plataforma.url", "equipo.id",
+                                                  "plataforma.intervalo_envio_s", "plataforma.lote_max",
+                                                  "plataforma.intervalo_visualizacion_s")}
+    cola = {f["estado"]: f["n"] for f in almacen.db.execute("SELECT estado, COUNT(*) AS n FROM cola_envio GROUP BY estado")}
+    almacen.cerrar()
+    print(f"Activa: {'si' if cfg['plataforma.activa'] == '1' else 'NO'}   URL: {cfg['plataforma.url']}   "
+          f"equipo.id: {cfg['equipo.id'] or '(falta)'}")
+    print(f"Secreto guardado: {'si' if credencial.existe() else 'NO'}   Lote: {cfg['plataforma.lote_max']} cada "
+          f"{cfg['plataforma.intervalo_envio_s']} s   En vivo cada {cfg['plataforma.intervalo_visualizacion_s']} s")
+    print("Cola: " + (", ".join(f"{n} {e}" for e, n in sorted(cola.items())) or "vacia"))
+    carpeta = ipc.carpeta_por_defecto() or Path("/run/g2")
+    try:
+        vivo = json.loads((carpeta / "uplink.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("g2-uplink: no publica estado (servicio detenido o sin carpeta de comunicacion)")
+        return 0
+    print(f"g2-uplink: {vivo.get('estado')}" + (f" - {vivo['detalle']}" if vivo.get("detalle") else "")
+          + f"   confirmados en esta sesion: {vivo.get('confirmados')}   rechazados: {vivo.get('rechazados')}")
+    nucleo = vivo.get("nucleo")
+    if nucleo:
+        print(f"g2-core: {'sin respuesta hace %.0f s' % nucleo['sin_respuesta_s'] if nucleo['sin_respuesta_s'] else 'responde'}"
+              f"   reinicios pedidos en la ultima hora: {nucleo['reinicios_ultima_hora']}"
+              + ("   (limite alcanzado: ya no se insiste)" if nucleo["agotado"] else "")
+              + (f"   error: {nucleo['error']}" if nucleo.get("error") else ""))
+    return 0
+
+
+def cmd_cola_descartar(args) -> int:
+    """Deja de enviar lo pendiente (registros de prueba). No borra: pasa a 'rechazado' y se queda en el equipo."""
+    ruta = _ruta(args)
+    pendientes = {f["tabla"]: f["n"] for f in _almacen_lectura(ruta).db.execute(
+        "SELECT tabla, COUNT(*) AS n FROM cola_envio WHERE estado IN ('pendiente', 'enviado') GROUP BY tabla ORDER BY tabla")}
+    if not pendientes:
+        print("No hay nada pendiente de envio.")
+        return 0
+    print("Pendientes de envio: " + ", ".join(f"{t} {n}" for t, n in pendientes.items()) + f"  (total {sum(pendientes.values())})")
+    if not args.confirmar:
+        print("No se cambio nada. Para dejar de enviarlos (siguen guardados en el equipo): agregue --confirmar")
+        return 0
+    almacen = _almacen_escritura(ruta)
+    try:
+        hecho = almacen.cola_descartar(motivo=args.motivo, actor=args.actor)
+    except ErrorAlmacen as error:
+        print(f"Error: {error}")
+        return 1
+    finally:
+        almacen.cerrar()
+    print(f"Descartados {sum(hecho.values())} registro(s) pendientes ({args.motivo}). Siguen guardados en el equipo; no se enviaran.")
+    return 0
+
+
+def _pedir_al_nucleo(tipo: str, **datos) -> int:
+    """Deja una orden para g2-core en la carpeta compartida (el nucleo es el unico que escribe en la base)."""
+    from g2 import ipc
+    carpeta = ipc.carpeta_por_defecto() or Path("/run/g2")
+    if not carpeta.is_dir():
+        print(f"No existe {carpeta}: g2-core no esta en marcha.")
+        return 1
+    identificador = ipc.ClienteNucleo(carpeta).enviar_orden(tipo, origen="local", actor="g2ctl", **datos)
+    print(f"Orden {tipo} enviada a g2-core ({identificador}). El resultado queda en el comando, los eventos CAL_* y la tabla calibracion.")
+    return 0
+
+
+def cmd_calibrar_punto(args) -> int:
+    """Calibra UN punto de un sensor con gas patron (D-049): el sensor debe tener ese gas ahora. Menos de 50 % es el punto bajo
+    (corrige el cero); 50 % o mas es el punto alto (corrige la ganancia)."""
+    return _pedir_al_nucleo("calibrar_punto", sensor_id=args.sensor, referencia_pct=args.referencia)
+
+
+def cmd_calibrar_cancelar(args) -> int:
+    return _pedir_al_nucleo("calibrar_cancelar")
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -225,6 +324,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--desde-stdin", action="store_true", help="lee el PIN de la entrada estandar (aprovisionamiento por SSH)")
     p.set_defaults(f=cmd_pin_fijar)
     sub.add_parser("pin-estado", help="que PIN rige (nunca muestra el valor)").set_defaults(f=cmd_pin_estado)
+
+    p = sub.add_parser("plataforma-credencial", help="guarda el secreto del equipo ante la plataforma (se pide sin mostrarlo)")
+    p.add_argument("--desde-stdin", action="store_true", help="lee el secreto de la entrada estandar")
+    p.set_defaults(f=cmd_plataforma_credencial)
+    sub.add_parser("plataforma-estado", help="estado del enlace con la plataforma y de la cola de envio").set_defaults(
+        f=cmd_plataforma_estado)
+    p = sub.add_parser("calibrar-punto", help="calibra un punto de un sensor con gas patron (0 = bajo, 98 = alto, 20.9 = aire)")
+    p.add_argument("sensor", type=int, help="id del sensor (ver sensores-listar)")
+    p.add_argument("referencia", type=float, help="concentracion del gas patron en %% de O2 (0 a 100)")
+    p.set_defaults(f=cmd_calibrar_punto)
+    sub.add_parser("calibrar-cancelar", help="cancela la calibracion en curso").set_defaults(f=cmd_calibrar_cancelar)
+    p = sub.add_parser("cola-descartar", help="deja de enviar lo pendiente, p. ej. registros de prueba (no borra nada)")
+    p.add_argument("--motivo", required=True, help="por que se descarta (queda en el evento y en cada entrada)")
+    p.add_argument("--actor", default="g2ctl")
+    p.add_argument("--confirmar", action="store_true", help="sin esto solo muestra lo que descartaria")
+    p.set_defaults(f=cmd_cola_descartar)
 
     args = ap.parse_args(argv)
     return args.f(args)

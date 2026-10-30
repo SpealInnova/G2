@@ -1,10 +1,11 @@
-// Regla de polkit de G2 (D-039, D-040): deja que el usuario pi REINICIE los dos servicios de G2 y el equipo, y
+// Regla de polkit de G2 (D-039, D-040): deja que el usuario pi REINICIE los tres servicios de G2 y el equipo, y
 // CAMBIE de red WiFi con NetworkManager, todo sin sudo.
 //
 // Por que polkit y no sudo: los servicios corren con NoNewPrivileges=yes, que impide usar sudo, y es una proteccion
 // que se quiere conservar. Con polkit el permiso es solo este y nada mas:
-//   * reiniciar (verbo "restart") g2-core.service y g2-ui.service; ninguna otra unidad, ni parar ni arrancar;
+//   * reiniciar (verbo "restart") g2-core.service, g2-ui.service y g2-uplink.service; ninguna otra unidad, ni parar ni arrancar;
 //   * reiniciar el equipo (no apagarlo);
+//   * montar y desmontar la memoria USB de los reportes con udisks2 (D-044); el nucleo solo la monta si se llama igual que el equipo;
 //   * NetworkManager: buscar redes WiFi, crear y modificar perfiles de conexion y activarlos (lo que necesita
 //     cambiar de red). No se permite apagar el WiFi ni la red completa.
 // El nucleo solo lo usa cuando una orden de la pantalla ya paso por el PIN y la confirmacion (src/g2/nucleo/nucleo.py).
@@ -15,12 +16,19 @@ polkit.addRule(function(action, subject) {
     if (action.id === "org.freedesktop.systemd1.manage-units") {
         var unidad = action.lookup("unit");
         var verbo = action.lookup("verb");
-        if ((unidad === "g2-core.service" || unidad === "g2-ui.service") && verbo === "restart") {
+        if ((unidad === "g2-core.service" || unidad === "g2-ui.service" || unidad === "g2-uplink.service") &&
+            verbo === "restart") {
             return polkit.Result.YES;
         }
     }
     if (action.id === "org.freedesktop.login1.reboot" ||
         action.id === "org.freedesktop.login1.reboot-multiple-sessions") {
+        return polkit.Result.YES;
+    }
+    var usb = ["org.freedesktop.udisks2.filesystem-mount",
+               "org.freedesktop.udisks2.filesystem-mount-other-seat",
+               "org.freedesktop.udisks2.filesystem-unmount-others"];
+    if (usb.indexOf(action.id) >= 0) {
         return polkit.Result.YES;
     }
     var redes = ["org.freedesktop.NetworkManager.network-control",

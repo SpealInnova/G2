@@ -33,6 +33,8 @@ def colores_estado(texto: str, acusada: bool, fase_encendida: bool) -> tuple[int
         return COLOR["blanco"], COLOR["alarma"]
     if texto == "NORMAL":
         return COLOR["normal"], COLOR["blanco"]
+    if texto == "CALIBRANDO":
+        return COLOR["calibrando"], COLOR["blanco"]
     return COLOR["inactivo"], COLOR["blanco"]            # SIN SEÑAL, APAGADO
 
 
@@ -253,4 +255,104 @@ def vista_texto(entrada, *, titulo: str, mensaje: str, mensaje_es_error: bool) -
                 "texto.b_ver.txt": entrada.rotulo_ver()}
     for n, rotulo in enumerate(entrada.rotulos()):
         v[f"texto.t_{n:02d}.txt"] = rotulo
+    return v
+
+
+def vista_reportes(*, desde: str, hasta: str, informacion: str, informacion_es_error: bool, usb_texto: str, usb_lista: bool,
+                   en_curso: bool, progreso: int, avance: str, resultado: str | None,
+                   resultado_es_error: bool = False) -> Vista:
+    """Pagina ``reportes``: el rango de fechas (dos campos que se tocan para cambiar), cuantos registros trae, el estado de
+    la memoria USB, el boton de generar, el avance y el resultado. Mientras corre (``en_curso``) la pantalla esta BLOQUEADA
+    (la Pi ignora los toques y le ordena a la pantalla que tambien): los botones se ven apagados, el boton dice
+    ``Generando...`` y ``res`` pide no tocar la pantalla ni retirar la memoria."""
+    rojo, normal, suave = COLOR["alarma"], COLOR["texto"], COLOR["texto_suave"]
+    apagado = COLOR["inactivo"]
+    vista: Vista = {
+        "reportes.v_desde.txt": f"Desde: {desde}", "reportes.v_hasta.txt": f"Hasta: {hasta}",
+        "reportes.v_desde.pco": apagado if en_curso else normal, "reportes.v_hasta.pco": apagado if en_curso else normal,
+        "reportes.i1.txt": usb_texto[:60], "reportes.i1.pco": normal if usb_lista else rojo,
+        "reportes.i2.txt": informacion[:60], "reportes.i2.pco": rojo if informacion_es_error else normal,
+        "reportes.b_generar.txt": "Generando..." if en_curso else "Generar reporte",
+        "reportes.b_generar.pco": apagado if en_curso else normal,
+        "reportes.b_hoy.pco": apagado if en_curso else normal,
+        "reportes.b_volver.pco": apagado if en_curso else normal,
+        "reportes.barra.val": progreso if en_curso else 0,
+        "reportes.prog.txt": avance[:60] if en_curso else "",
+    }
+    if en_curso:
+        vista["reportes.res.txt"], vista["reportes.res.pco"] = "No toque la pantalla ni retire la memoria USB", COLOR["aviso"]
+    else:
+        vista["reportes.res.txt"], vista["reportes.res.pco"] = (resultado or "")[:70], rojo if resultado_es_error else suave
+    return vista
+
+
+MAX_RES_CALIBRACION = 80                        # txt_maxl de ``calibracion.res``
+
+
+def formato_gas(referencia: float) -> str:
+    """``98.0`` o ``99.95``: un decimal si basta, dos si hacen falta."""
+    return f"{referencia:.1f}" if round(referencia, 1) == referencia else f"{referencia:.2f}"
+
+
+def _texto_sensor_calibracion(n: int, sensor: Mapping | None, vivo: Mapping | None) -> str:
+    """``Sensor 1  20.9 %``: lo que se toca para elegir el sensor a calibrar."""
+    if sensor is None:
+        return f"Sensor {n}  SIN SENSOR"
+    if not sensor["habilitado"]:
+        return f"Sensor {n}  APAGADO"
+    return f"Sensor {n}  {(vivo or {}).get('texto_o2', '--.-')} %"
+
+
+def _texto_vigente(c: Mapping | None) -> str:
+    """La calibracion vigente del sensor elegido, en una linea."""
+    if not c:
+        return "Vigente: de fábrica (sin calibrar)"
+    def punto(valor):
+        return "--" if valor is None else f"{valor:g}"
+    return (f"Vigente: gan. {c.get('ganancia') or 1.0:.3f}  cero {c.get('offset_pct') or 0.0:+.2f} %  "
+            f"bajo {punto(c.get('bajo_ref_pct'))}  alto {punto(c.get('alto_ref_pct'))}")[:60]
+
+
+def vista_calibracion(*, sensores: list[Mapping], vivos: list[Mapping], calibraciones: Mapping[int, Mapping], elegido: int,
+                      referencia: float, calibracion: Mapping | None, en_curso: bool, resultado: str | None,
+                      resultado_es_error: bool = False) -> Vista:
+    """Pagina ``calibracion`` (D-048, D-049): se elige el sensor y el gas patron (0.0 %, aire 20.9 % o el valor que se teclee) y se
+    calibra ESE punto. Muestra que punto es (bajo: cero; alto: ganancia), la calibracion vigente, el avance y el resultado.
+    Mientras corre (``en_curso``) la pantalla esta BLOQUEADA como en los reportes: los botones se ven apagados, las lineas dicen
+    como va y ``res`` pide no tocar la pantalla."""
+    rojo, normal, suave, apagado = COLOR["alarma"], COLOR["texto"], COLOR["texto_suave"], COLOR["inactivo"]
+    boton, marcado = COLOR["boton"], COLOR["boton_pulsado"]
+    v: Vista = {}
+    for n in (1, 2):
+        sensor = sensores[n - 1] if n <= len(sensores) else None
+        vivo = next((s for s in vivos if sensor is not None and s.get("id") == sensor["id"]), None)
+        v[f"calibracion.v_s{n}.txt"] = _texto_sensor_calibracion(n, sensor, vivo)
+        activo = sensor is not None and bool(sensor["habilitado"])
+        v[f"calibracion.v_s{n}.pco"] = normal if activo and not en_curso else apagado
+        v[f"calibracion.v_s{n}.bco"] = marcado if n == elegido else boton
+    v["calibracion.v_gas.txt"] = f"Gas: {formato_gas(referencia)} %"
+    v["calibracion.b_bajo.bco"] = marcado if referencia == 0.0 else boton
+    v["calibracion.b_aire.bco"] = marcado if referencia == 20.9 else boton
+    for control in ("v_gas", "b_bajo", "b_aire", "b_iniciar", "b_volver"):
+        v[f"calibracion.{control}.pco"] = apagado if en_curso else normal
+    v["calibracion.b_iniciar.txt"] = "Calibrando..." if en_curso else "Calibrar este punto"
+    if en_curso:
+        c = calibracion or {}
+        variacion, limite = c.get("variacion_pct"), c.get("estable_pct", 0.3)
+        v["calibracion.i1.txt"] = f"Calibrando {c.get('nombre', 'el sensor')} con gas de {formato_gas(c.get('referencia_pct', referencia))} %"[:60]
+        v["calibracion.i2.txt"] = ("Esperando una señal estable..." if variacion is None
+                                   else f"Variación {variacion:.2f} % (debe bajar de {limite:.2f} %)")[:60]
+        transcurrido, tope = float(c.get("transcurrido_s", 0.0)), float(c.get("tope_s", 300.0))
+        v["calibracion.i3.txt"] = f"Tiempo {int(transcurrido)} s de {int(tope)} s como máximo"
+        v["calibracion.barra.val"] = max(0, min(100, int(100 * transcurrido / tope))) if tope > 0 else 0
+        v["calibracion.res.txt"], v["calibracion.res.pco"] = "No toque la pantalla ni mueva el sensor", COLOR["aviso"]
+        return v
+    alto = referencia >= 50.0
+    v["calibracion.i1.txt"] = (f"Sensor {elegido} con gas de {formato_gas(referencia)} %: punto "
+                               + ("alto (corrige la ganancia)" if alto else "bajo (corrige el cero)"))[:60]
+    v["calibracion.i2.txt"] = _texto_vigente(calibraciones.get(sensores[elegido - 1]["id"]) if elegido <= len(sensores) else None)
+    v["calibracion.i3.txt"] = "Ponga el gas y toque Calibrar. Tarda de 1 a 5 min."
+    v["calibracion.barra.val"] = 0
+    v["calibracion.res.txt"] = (resultado or "")[:MAX_RES_CALIBRACION]
+    v["calibracion.res.pco"] = rojo if resultado_es_error else suave
     return v
