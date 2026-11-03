@@ -61,7 +61,10 @@ publicados (no se edita a mano).
 
 ### 2026-11-03
 
-- **Pantalla Nextion: texto de temperatura y humedad en la gráfica**
+- **Pantalla Nextion: se suman la tabla de colores y una versión anterior del .tft**
+  - nextion/fonts/colores.pdf: tabla de colores de 16 bits de referencia para el .HMI.
+  - nextion/g2_.tft: compilación anterior de la pantalla (octubre), guardada como respaldo.
+- **Pantalla Nextion: texto de temperatura y humedad en la gráfica** (`a3e6926`)
   - Página grafica del .HMI con el texto amb (temperatura y humedad del sensor DHT22, D-051) entre las etiquetas de tiempo; la página principal no cambia. Pantalla compilada (.tft) al día y probada en la pantalla real: el valor apare…
 - **Temperatura y humedad con el sensor DHT22 (D-051) y vigía de reinicios de la pantalla (D-050)** (`2554847`)
   - Sensor DHT22 en el GPIO4 (D-051): el núcleo lo lee en un hilo aparte cada 10 s, guarda el promedio, mínimo y máximo cada 60 s y lo envía a la plataforma como medición de periférico. Solo se registra y se muestra: no hay alarmas p…
@@ -158,14 +161,5 @@ publicados (no se edita a mano).
   - scripts/aprovisionar_pi.sh: habilita SPI e I2C, libera el UART para la Nextion, apaga el Bluetooth e instala sqlite3 y tmux (repetible, con respaldo de la configuracion de arranque).
   - Herramientas de banco (tools/banco): sonda del ADS1263, medicion y comparacion de configuraciones, y monitor en vivo.
   - HARDWARE.md (diagrama, pines, direcciones I2C) y decisiones D-018 a D-026 en MEMORIA_TECNICA.md; BITACORA.md actualizada.
-
-### 2026-10-04
-
-- **Base de G2: contexto, decisiones, esquema SQLite con cadena de auditoria** (`d991cfa`)
-  - CONTEXTO.md y Mejoras.txt: origen del proyecto (lo aprendido del equipo ANZD-600226001 y la lista de funciones deseadas).
-  - MEMORIA_TECNICA.md y BITACORA.md: decisiones D-001 a D-016 con su justificacion, y registro cronologico del trabajo.
-  - Base de datos interna (SQLite): migraciones 001 a 003 (esquema, catalogo de eventos y alarmas, cadena de auditoria SHA-256), cola de envio por referencia con borrado solo tras confirmacion de la plataforma, y vista de trazabilida…
-  - Modulos de almacenamiento (base, migraciones, auditoria) y 55 pruebas.
-  - tools/generar_cadena.py: genera la migracion 003.
 
 <!-- NOVEDADES:FIN -->
