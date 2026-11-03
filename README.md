@@ -61,7 +61,9 @@ publicados (no se edita a mano).
 
 ### 2026-11-03
 
-- **Temperatura y humedad con el sensor DHT22 (D-051) y vigía de reinicios de la pantalla (D-050)**
+- **Pantalla Nextion: texto de temperatura y humedad en la gráfica**
+  - Página grafica del .HMI con el texto amb (temperatura y humedad del sensor DHT22, D-051) entre las etiquetas de tiempo; la página principal no cambia. Pantalla compilada (.tft) al día y probada en la pantalla real: el valor apare…
+- **Temperatura y humedad con el sensor DHT22 (D-051) y vigía de reinicios de la pantalla (D-050)** (`2554847`)
   - Sensor DHT22 en el GPIO4 (D-051): el núcleo lo lee en un hilo aparte cada 10 s, guarda el promedio, mínimo y máximo cada 60 s y lo envía a la plataforma como medición de periférico. Solo se registra y se muestra: no hay alarmas p…
   - Lectura por tiempos de flancos con libgpiod: el kernel pierde los primeros bits al armar la detección, así que el decodificador reconstruye hasta 6 bits iniciales (la humedad nunca pasa de 100 %) y confirma con la suma de comprob…
   - Fallos: 3 ciclos seguidos sin dato dejan un evento PER_FALLA (sin sonido ni relevos) y al volver PER_RECUPERADO; si falla tras haber funcionado se guardan huecos marcados sin datos. La herramienta tools/banco/sonda_dht22.py sirve…
@@ -165,9 +167,5 @@ publicados (no se edita a mano).
   - Base de datos interna (SQLite): migraciones 001 a 003 (esquema, catalogo de eventos y alarmas, cadena de auditoria SHA-256), cola de envio por referencia con borrado solo tras confirmacion de la plataforma, y vista de trazabilida…
   - Modulos de almacenamiento (base, migraciones, auditoria) y 55 pruebas.
   - tools/generar_cadena.py: genera la migracion 003.
-
-### 2026-10-03
-
-- **Initial commit** (`81e0d27`)
 
 <!-- NOVEDADES:FIN -->
