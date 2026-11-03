@@ -1923,6 +1923,88 @@ descartadas, consecuencias, fuente.
 
 ---
 
+## D-050 — Arranque de la pantalla (vigía de comunicación) y reinicios de la pantalla por su alimentación
+
+- **Fecha:** 2026-10-30
+- **Dos problemas que planteó el usuario:** (1) la pantalla enciende al instante y la Raspberry Pi tarda en arrancar, así que al encender no hay datos; (2) la pantalla se reinicia
+  en bucle cuando se alimenta con una fuente conmutada de 5 V 3 A 15 W.
+- **Medido en la Pi (2026-10-30):** desde que arranca el kernel, `g2-core` queda listo a los 20,7 s, `g2-ui` conecta con la pantalla a los 22,3 s y los primeros datos aparecen a los
+  ~29 s (más ~5 s del firmware antes del kernel: **30 a 35 s desde que se enchufa**). Hasta ahí el sistema pasa 18 s en `cloud-init`, `NetworkManager` (16 s) y la espera de red,
+  que `g2-core` y `g2-ui` no necesitan. Mientras tanto la pantalla muestra lo que trae el `.HMI`: `--.-`, `SIN SEÑAL`, `SIN RED` y, en la línea de avisos, **«Sin alarmas»**: un mensaje
+  tranquilizador sin nada que lo respalde. Hay además un riesgo sin relación con el arranque: si la Pi o `g2-ui` se cuelgan, la pantalla («tonta», D-029) conserva los últimos valores como actuales.
+- **Decisión del usuario (A):** resolverlo **en el `.HMI`**, con una **vigía de comunicación**. La Pi (g2-ui) escribe `principal.va_vivo=1` cada segundo y, al conectarse,
+  `principal.va_arranque=0`; la pantalla tiene un temporizador de 3 s que, si no llegó la señal, pone `Iniciando el sistema...` (hasta 90 s desde que enciende) y después `Sin comunicación con
+  el equipo` en rojo, borrando los valores. Cubre el arranque **y** cualquier cuelgue. El texto inicial de `aviso` deja de ser «Sin alarmas». Especificado en la sección 5.1 del HMI (variables,
+  temporizador, el script del evento y el de la página `grafica`). No se acorta el arranque de la Pi por ahora (se evaluó quitar `cloud-init`, la espera de red y `apt-daily` y arrancar
+  `g2-core` antes: de ~30 s a ~20 s; queda como opción).
+- **Lado de la Pi (ya desplegado):** `g2-ui` manda la señal de vida al final de cada vuelta (si se atasca, se corta sola), solo con la página cargada y el protocolo compatible. Si el `.tft` no trae
+  las variables, la pantalla contesta «variable o atributo inválido»: a los 3 rechazos deja de mandarla con **un solo error** en el registro, y vuelve a intentarlo si la pantalla se reinicia (puede traer un
+  `.tft` nuevo). La pantalla avisa con `65 PP FD 00` (`PERDIO_LA_VIGIA`, común a todas las páginas) cuando su vigía pintó el aviso; la Pi repinta todo (su caché creía que los textos seguían puestos).
+  *Aún no probado con el `.tft` nuevo (falta construirlo).*
+- **Reinicios de la pantalla (registro y alerta):** `g2-ui` cuenta los reinicios de los últimos 10 min (el aviso `0x88` de la pantalla solo llega si se reinicia con `g2-ui` en marcha) y se lo dice al núcleo con la
+  orden interna `pantalla_reiniciada` (observación, no comando: no se guarda en `comando`). El núcleo deja el evento `PANT_REINICIADA` (los de una ráfaga se agrupan en uno con sus
+  `repeticiones`) y abre la alarma del sistema `ALM_PANTALLA_INESTABLE` con **5 o más en 10 min** (tras 30 s; se cierra con 10 min sin reinicios; aparece en el aviso como `PANTALLA INESTABLE`, no suena ni
+  mueve relevos, sale en `alertas_salud` y viaja a la plataforma). Migración 012 (los dos códigos del catálogo). Se evaluó también bajar solo el brillo y el volumen tras una ráfaga: **no se hace**
+  (el usuario eligió registrar y avisar; podría ocultar un problema de la fuente).
+- **Registro persistente:** el `journal` de la Pi estaba en memoria (`/run/log/journal`), así que solo había datos del encendido actual y se perdía el historial de reinicios. `scripts/instalar_servicios.sh`
+  ahora lo deja guardado (`Storage=persistent`, tope de 50 MB, 30 días, 500 MB libres mínimo). **Pendiente que lo ejecute el usuario con `sudo`.**
+- **Lo medido sobre los reinicios (2026-10-30):** 17 reinicios ese día, en ráfagas: 15:50 (1), 16:05 (3) y 16:20:31 a 16:20:51 (**13 en 20 s, uno cada ~1,3 s**, el ritmo de un bucle de arranque: la pantalla
+  arranca, pide su pico de corriente, el voltaje cae y se reinicia). **No era el sonido** (sin alarmas activas, volumen 50). Las banderas de voltaje de la Pi (`throttled`) valen `0x0` en las 131
+  muestras desde el 21/10: **no sirven para este caso, porque la pantalla va con otra fuente** (dato del usuario: la Pi y la pantalla tienen fuentes distintas, y con las anteriores no había reinicios;
+  cable y conexión descartados por el usuario). La sospecha es la fuente nueva: respuesta pobre al pico de arranque, protección que se apaga y reintenta, ondulación, o inestabilidad con poca carga
+  (la pantalla consume ~0,3 a 0,8 A de una fuente de 3 A). **Pruebas propuestas (hardware, del usuario):** medir el voltaje en los pines de 5 V de la pantalla durante el reinicio (multímetro con mínimos u
+  osciloscopio); probar la misma fuente con una carga ficticia (resistencia de ~10 Ω y 5 W, 0,5 A) en paralelo; un condensador de 470 a 1000 µF en la entrada de la pantalla; comparar con la fuente
+  anterior. Con el registro nuevo cada episodio queda con hora y número de reinicios.
+- **Probado:** 849 pruebas (21 nuevas: señal de vida, rechazos, reactivación con un `.tft` nuevo, repintado tras la pérdida de la vigía, aviso de reinicios y su ventana de 10 min, evento agrupado,
+  alarma con retardo, histéresis y cierre, que no suene ni mueva relevos). Desplegado en la Pi con copia previa de la base (esquema 12, auditoría correcta); con el `.tft` actual la Pi detecta que no hay vigía,
+  lo registra una vez y deja de insistir.
+- **Pendiente:** construir la vigía en el `.HMI` y probarla en la pantalla real (arranque en frío, cuelgue de `g2-ui`, reinicio de servicios); ejecutar el instalador con `sudo` para el registro persistente; la
+  investigación de la fuente; decidir si se acorta el arranque de la Pi.
+
+---
+
+## D-051 — Temperatura y humedad del ambiente con el sensor DHT22
+
+- **Fecha:** 2026-11-03
+- **Pedido del usuario:** agregar el dato de humedad y temperatura con un sensor DHT22 (módulo de 3 pines en el GPIO4). Alcance elegido: **solo registrar y mostrar** (sin alarmas de límites ni
+  corrección del oxígeno), visible en la **pantalla, la plataforma y el reporte**.
+- **Por qué importa:** el sensor de oxígeno tiene coeficiente de temperatura (cero y span, hasta ±0,5 % por 10 °C) y una constante térmica de 15 min (HARDWARE.md, sección 6). Con el dato queda
+  evidencia de las condiciones en que se midió, y sirve de base para decidir una compensación más adelante **con datos propios** (el sensor ya compensa internamente).
+- **Qué ya existía en la base:** las tablas `periferico` y `medicion_periferico` (con sus disparadores de cola y borrado protegido) y los eventos `PER_FALLA` / `PER_RECUPERADO` estaban desde el esquema
+  inicial: **no hay migración** (el esquema sigue en la versión 12) y la plataforma ya recibe `medicion_periferico` por g2-uplink.
+- **Lectura (`g2/hardware/dht22.py`):** el DHT22 manda 40 bits cuya duración en alto es el dato (~27 µs = 0, ~70 µs = 1); medirlos desde Python con `sleep` no es fiable en Linux. Se usa libgpiod v2
+  (`python3-libgpiod`, ya instalado): la línea sale como salida, se baja 2 ms y **en una sola llamada** pasa a entrada con detección de flancos, y el kernel entrega la hora de cada flanco. El
+  decodificador es una función pura (se prueba sin hardware): toma los 40 últimos pulsos, exige suma de comprobación correcta y valores posibles para el sensor (−40 a 80 °C, 0 a 100 %). Hasta 5 intentos
+  con 2,1 s entre ellos (el sensor pide ≥ 2 s). Un GPIO ocupado o la falta de libgpiod no se reintentan. No usa `lgpio` (que ya usa el ADC) porque para pasar de salida a entrada con alertas hay que liberar la línea
+  y reservarla de nuevo (dos llamadas), y la respuesta del sensor empieza ~30 µs después de soltarla; libgpiod lo hace en una sola (no se comparó midiendo: es la razón de diseño).
+- **Servicio en hilo propio (`servicio_ambiente.py`), como el de red (D-040):** una lectura tarda desde 60 ms hasta ~10 s si falla; el ciclo del núcleo (latido del watchdog, D-012) no espera. El hilo
+  lee cada `ambiente.intervalo_lectura_s` (10 s) y deja el resultado en una cola corta; el núcleo la recoge, y sigue siendo **el único que escribe en la base** (D-005).
+- **Qué se guarda:** cada `ambiente.intervalo_guardado_s` (60 s por omisión → ~2.900 filas por día) un registro por magnitud (`temperatura_c`, `humedad_pct`) en `medicion_periferico` con promedio,
+  mínimo y máximo, y la calidad con los bits de `lectura` (16 si hubo lecturas fallidas, 32 si ninguna buena: hueco con valores `NULL`). **Si el sensor nunca contestó desde que arrancó el núcleo no se
+  guardan huecos** (queda el evento); si falla después de haber funcionado sí, para que el hueco se vea como hueco. El periférico se da de alta solo (`ambiente`, `dht22`, `gpio`, `GPIO4`).
+- **Falla del sensor:** 3 lecturas malas seguidas (~30 s) → evento `PER_FALLA` (una vez por episodio, con `periferico_id` y el motivo: `sin_respuesta`, `suma`, `rango`…); al volver →
+  `PER_RECUPERADO`. **No es una alarma**: no suena, no mueve relevos y no ensucia el aviso de equipos instalados sin el sensor. En la pantalla la línea pasa a rojo con `-- °C   -- %`. Una lectura de más de
+  2 min no se muestra como actual.
+- **Configuración (catálogo):** `ambiente.activo` (1), `ambiente.pin_gpio` (4, solo local), `ambiente.intervalo_lectura_s` (10), `ambiente.intervalo_guardado_s` (60). El activo y el pin se aplican al
+  reiniciar el núcleo; los intervalos, en marcha.
+- **Pantalla:** componente nuevo y **opcional** `grafica.amb` (texto `24.5 °C   55 %`) en la página de la gráfica de concentración, en el hueco bajo la curva entre `x_ini` y `x_fin` (sección 15 de la
+  especificación del HMI). **La página principal no cambia** (primero se había previsto ahí; el usuario pidió la gráfica). Solo texto: no se dibuja la curva de temperatura ni de humedad. La Pi solo
+  escribe `amb` si el equipo lee el sensor, así que un `.tft` sin el componente sigue funcionando sin errores. No cambia `VERSION_PROTOCOLO`.
+- **Plataforma y reporte:** viaja como `medicion_periferico` (CONTRATO_PLATAFORMA.md: identificar por `magnitud`, no por `periferico_id`). El resumen del reporte PDF suma un renglón «Ambiente» con el mínimo,
+  el máximo y el promedio ponderado del rango. La foto en vivo no lleva el ambiente.
+- **Medido con el sensor real (2026-11-03, Pi 3 B+, módulo de 3 pines en el GPIO4):** responde bien (26,1 °C y 51,5 %). Hallazgos: (1) una salida no admite detección de flancos (`EINVAL`), así que hay que pasar a
+  entrada, y ese cambio tarda 0,3 a 0,8 ms en el kernel: **siempre se pierden los primeros 1 a 4 bits**. Como los 6 primeros bits son la parte alta de la humedad (≤ 100 % = 0x03E8) y valen 0, el
+  decodificador los reconstruye y la suma de comprobación confirma (con eso, 6 de 10 lecturas buenas en lugar de 2 de 6). (2) Aun así, algunas capturas traen pulsos de más o de menos en el medio
+  (flancos fusionados cuando otra interrupción retrasa al kernel): se descartan por la suma y **se reintenta**. Con 3 intentos: 11 de 12 lecturas; con 5: **12 de 12** (tiempo medio 1,0 s, máximo 6,6 s,
+  en el hilo aparte). Por eso son 5 intentos. Si el sensor se desconecta, `PER_FALLA` sale ~30 s después de que fallen 3 ciclos seguidos de 5 intentos.
+- **Probado:** 42 pruebas nuevas (decodificador con tramas sintéticas: lectura, bajo cero, principio perdido, suma mala, valores imposibles, pulsos inválidos; reintentos; servicio y su hilo; acumulador; núcleo:
+  promedios, cola de envío, huecos, eventos, estado, vigencia; pantalla e interfaz) y 5 del reporte. En la Pi el lector corre completo (reserva, cambio a entrada, espera y liberación del GPIO) y,
+  **sin sensor conectado, informa «el sensor no contesta»**.
+- **Pendiente / límites:** desplegar en la Pi; agregar `amb` al `.HMI` (página `grafica`). La lectura depende del retraso de interrupciones del kernel (no es determinista): la sonda
+  `tools/banco/sonda_dht22.py --crudo` muestra los pulsos si vuelve a fallar. Ubicar el sensor cerca de los sensores de oxígeno y lejos de fuentes de calor (HARDWARE.md); el DHT22 tiene ±0,5 °C y ±2 a 5 % de humedad, y su lectura no es de seguridad.
+
+---
+
 ## Decisiones pendientes
 
 - Probar las alertas por correo con MySQL y la cuenta real, y decidir cuándo

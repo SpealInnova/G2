@@ -117,6 +117,7 @@ class EnlaceEmulado(_EnlaceBase):
     def __init__(self) -> None:
         super().__init__()
         self.enviadas: list[str] = []
+        self.vigia: list[str] = []                       # las señales de la vigia (``principal.va_*``): aparte, para no mezclarlas
         self.crudas: list[bytes] = []                    # bloques de bytes sin terminador (datos de un ``addt``)
         self._entrada = b""
 
@@ -125,7 +126,7 @@ class EnlaceEmulado(_EnlaceBase):
         return datos
 
     def enviar(self, orden: str) -> None:
-        self.enviadas.append(orden)
+        (self.vigia if orden.startswith("principal.va_") else self.enviadas).append(orden)
 
     def enviar_crudo(self, datos: bytes) -> None:
         self.crudas.append(bytes(datos))
@@ -148,6 +149,10 @@ class EnlaceEmulado(_EnlaceBase):
 
     def encendida(self) -> None:
         self.inyectar(bytes([0x88]))
+
+    def vigia_perdida(self, pagina: str = "principal") -> None:
+        """Simula el aviso del .HMI cuando su vigia no recibio la señal de la Pi (``65 PP FD 00``)."""
+        self.inyectar(bytes([0x65, P.CODIGO_PAGINA[pagina], P.PERDIO_LA_VIGIA, 0x00]))
 
     def tocar_en(self, x: int, y: int, pulsado: bool = True) -> None:
         """Simula un toque en el punto (x, y) (lo que informa la pantalla con ``sendxy=1``)."""

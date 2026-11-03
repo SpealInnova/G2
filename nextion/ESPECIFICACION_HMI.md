@@ -154,12 +154,12 @@ Tipo *Text* salvo donde se indica. `xcen`/`ycen` = 1 (centrado) salvo que se ind
 | `tit_1` | Text | 32 | 84 | 200 | 36 | 1 | SENSOR 1 | texto_suave | crop image | `xcen`=0 |
 | `o2_1` | Text | 32 | 124 | 260 | 130 | 3 | --.- | texto | crop image | `xcen`=2 (derecha) |
 | `uni_1` | Text | 296 | 196 | 84 | 40 | 1 | %O2 | texto_suave | crop image | `xcen`=0 |
-| `est_1` | Text | 32 | 268 | 344 | 68 | 2 | SIN SEÑAL | texto_suave | solid, bco = tarjeta | la Pi cambia texto y colores |
+| `est_1` | Text | 32 | 268 | 344 | 68 | 2 | INICIANDO | texto_suave | solid, bco = tarjeta | la Pi cambia texto y colores |
 | `tit_2` | Text | 424 | 84 | 200 | 36 | 1 | SENSOR 2 | texto_suave | crop image | `xcen`=0 |
 | `o2_2` | Text | 424 | 124 | 260 | 130 | 3 | --.- | texto | crop image | `xcen`=2 |
 | `uni_2` | Text | 688 | 196 | 84 | 40 | 1 | %O2 | texto_suave | crop image | `xcen`=0 |
-| `est_2` | Text | 424 | 268 | 344 | 68 | 2 | SIN SEÑAL | texto_suave | solid, bco = tarjeta | |
-| `aviso` | Text | 20 | 368 | 760 | 40 | 1 | Sin alarmas | texto | solid, bco = tarjeta | línea de alarmas y mensajes |
+| `est_2` | Text | 424 | 268 | 344 | 68 | 2 | INICIANDO | texto_suave | solid, bco = tarjeta | |
+| `aviso` | Text | 20 | 368 | 760 | 40 | 1 | Iniciando el sistema... | texto | solid, bco = tarjeta | línea de alarmas y mensajes; **ya no empieza en «Sin alarmas»**: mientras la Pi no hable no hay datos que lo respalden |
 | `b_alarmas` | Button | 26 | 427 | 108 | 42 | 4 | Alarmas | texto | solid, bco = boton | `bco2` = boton_pulsado |
 | `b_config` | Button | 159 | 427 | 108 | 42 | 4 | Config | texto | solid, bco = boton | `bco2` = boton_pulsado |
 | `b_red` | Button | 284 | 427 | 108 | 42 | 4 | Red | texto | solid, bco = boton | `bco2` = boton_pulsado |
@@ -167,6 +167,10 @@ Tipo *Text* salvo donde se indica. `xcen`/`ycen` = 1 (centrado) salvo que se ind
 | `b_sistema` | Button | 538 | 427 | 108 | 42 | 4 | Sistema | texto | solid, bco = boton | `bco2` = boton_pulsado |
 | `b_acuse` | Button | 665 | 427 | 108 | 42 | 4 | ACUSAR | texto | solid, bco = aviso | `bco2` = boton_pulsado |
 | `proto` | Variable (número) | | | | | | | | | `vscope`=global, `val`=1 |
+| `va_vivo` | Variable (número) | | | | | | | | | `vscope`=**global**, `val`=0; la Pi escribe 1 cada segundo (vigía, sección 5.1) |
+| `va_arranque` | Variable (número) | | | | | | | | | `vscope`=**global**, `val`=**1**; la Pi escribe 0 al conectarse |
+| `va_sin` | Variable (número) | | | | | | | | | `vscope`=local, `val`=0; cuenta los ciclos sin señal |
+| `tm0` | Timer | | | | | | | | | `tim`=**3000**, `en`=1; su evento es la vigía (sección 5.1) |
 
 Los botones quedan 2 px dentro de las siluetas de la imagen, para que el borde de la imagen
 enmarque cada botón. Los tres colores de `bco` de la imagen real son: fondo 63391, tarjeta
@@ -225,6 +229,83 @@ Cada sensor se avisa por separado. Para el sensor N, la Pi escribe:
 
 El parpadeo lo hace la Pi (no la pantalla), así se detiene si `g2-ui` se detiene y el recuadro queda
 en el último color. El sonido de alarma es otro audio del proyecto (id 1 en adelante), por el canal 0.
+
+### 5.1 Vigía de comunicación (D-050)
+
+La pantalla enciende en 1 o 2 s y la Raspberry Pi tarda unos **30 s** en llegar a mostrar datos (sistema operativo, `g2-core`, `g2-ui`).
+Además, si la Pi o `g2-ui` se cuelgan, la pantalla conserva los últimos valores como si fueran actuales. Para las dos cosas la pantalla
+lleva una **vigía**: la Pi le da una señal de vida cada segundo y, si deja de llegar, **la propia pantalla** avisa y borra los valores.
+
+**Variables y temporizador** (tabla de componentes de arriba, en la página `principal`): `va_vivo` (global, 0), `va_arranque` (global, **1**),
+`va_sin` (local, 0) y el temporizador `tm0` (`tim` = 3000, `en` = 1). La Pi escribe `principal.va_vivo.val=1` cada segundo y, al
+conectarse, `principal.va_arranque.val=0` (una vez, y otra tras cada reinicio de la pantalla).
+
+**Evento *Timer* de `tm0`** (copiar tal cual; los números son los colores de la sección 4: tarjeta 65535, texto 6438, alarma 51427, blanco 65535,
+inactivo 27568):
+
+```
+if(va_vivo.val==1)
+{
+  va_vivo.val=0
+  va_sin.val=0
+}else
+{
+  va_sin.val=va_sin.val+1
+  if(va_arranque.val==1&&va_sin.val<30)
+  {
+    aviso.txt="Iniciando el sistema..."
+    aviso.bco=65535
+    aviso.pco=6438
+    est_1.txt="INICIANDO"
+    est_2.txt="INICIANDO"
+  }else
+  {
+    aviso.txt="Sin comunicación con el equipo"
+    aviso.bco=51427
+    aviso.pco=65535
+    est_1.txt="SIN SEÑAL"
+    est_2.txt="SIN SEÑAL"
+    printh 65 00 FD 00 FF FF FF
+  }
+  o2_1.txt="--.-"
+  o2_2.txt="--.-"
+  est_1.bco=27568
+  est_2.bco=27568
+  est_1.pco=65535
+  est_2.pco=65535
+}
+```
+
+**Cómo se comporta:**
+
+1. **Al encender:** `aviso` dice `Iniciando el sistema...` y los recuadros `INICIANDO` (gris) hasta que la Pi se conecta (~30 s). Nunca dice «Sin alarmas»
+   sin que la Pi lo haya dicho.
+2. **Con la Pi viva:** cada segundo llega `va_vivo`=1 y el temporizador (cada 3 s) lo apaga; la Pi vuelve a pintar todo lo que cambia. La pantalla no se entera.
+3. **Si la Pi o `g2-ui` dejan de responder** (o pasan 90 s del arranque sin que aparezca): a los 3 a 6 s la pantalla pone `Sin comunicación con el equipo` en rojo y
+   borra los valores (`--.-`, `SIN SEÑAL`). Es lo que debe ver quien esté frente al equipo si el monitoreo se cayó.
+4. **Aviso a la Pi (`printh 65 00 FD 00 FF FF FF`):** en el estado «sin comunicación» la pantalla se lo manda a la Pi cada 3 s. Si `g2-ui` estaba vivo y
+   solo se atrasó, repinta todo (la vigía había pisado los textos y colores) y retoma la señal; si no, el mensaje queda ahí. Nombre en el protocolo: `PERDIO_LA_VIGIA`
+   (`FD`, común a todas las páginas, como `FE` = página cargada).
+5. **Reinicio de `g2-ui`** (por ejemplo, *Reiniciar servicios*): dura unos segundos y se ve `Iniciando el sistema...` o, pasados 6 s, el aviso rojo; al volver, la Pi lo
+   repinta todo.
+
+**Si el `.tft` no trae las variables**, la pantalla contesta «variable o atributo inválido» a las primeras señales: la Pi deja de mandarlas tras 3 rechazos, con un solo
+error en el registro, y las vuelve a mandar cuando la pantalla se reinicia (puede traer un `.tft` nuevo).
+
+**En la página `grafica`** (también muestra el oxígeno) va un temporizador `tm0` (`tim` = 3000, `en` = 1) con este evento *Timer*; no hace falta ninguna variable más porque
+usa las de `principal`:
+
+```
+if(principal.va_vivo.val==1)
+{
+  principal.va_vivo.val=0
+}else
+{
+  page principal
+}
+```
+
+Las demás páginas (config, red, alarmas, calibración, sistema, reportes) no llevan vigía: son de trabajo y se usan con la Pi viva (sin ella ningún toque hace nada).
 
 ## 6. Sonido de pulsación (pitido)
 
@@ -574,10 +655,15 @@ Los textos llevan `sta` = solid color y `bco` = tarjeta (65535), salvo `titulo` 
 | `y_min` | Text | 8 | 346 | 58 | 28 | 0 | 18 | texto_suave | 10; `xcen`=2; marca de abajo |
 | `x_ini` | Text | 72 | 376 | 160 | 24 | 0 | -12 min | texto_suave | 10; `xcen`=0; lo que cubre la gráfica (la Pi lo escribe) |
 | `x_fin` | Text | 612 | 376 | 160 | 24 | 0 | ahora | texto_suave | 10; `xcen`=2; fijo |
+| `amb` | Text | 240 | 376 | 364 | 24 | 0 | -- °C   -- % | texto_suave | 20; `xcen`=1 (centrado); temperatura y humedad del ambiente (DHT22, D-051), en el hueco entre `x_ini` y `x_fin`. **Es opcional**: la Pi solo le escribe si el equipo lee el sensor (`ambiente.activo`); un .tft sin este componente sigue funcionando |
 | `v1` | Text | 72 | 404 | 330 | 36 | 1 | S1  20.9 %  NORMAL | sensor1 (6969) | 30; `xcen`=0; la Pi cambia texto y color |
 | `v2` | Text | 420 | 404 | 330 | 36 | 1 | S2  20.9 %  NORMAL | sensor2 (58306) | 30; `xcen`=0 |
 | `msg` | Text | 72 | 442 | 700 | 22 | 0 | Toque la pantalla para volver | texto_suave | 40; centrado; fijo |
 | `salir` | **Hotspot** | 0 | 0 | 800 | 480 | | | | **el último que se crea** (queda encima de todo); un toque en cualquier parte |
+
+**Texto `amb`:** `24.5 °C   55 %`; `-- °C   -- %` mientras no hay una lectura vigente (arranque, sensor desconectado o núcleo sin respuesta). `pco` = texto_suave, o **alarma**
+(rojo) cuando el sensor lleva 3 lecturas malas seguidas (evento `PER_FALLA`). Solo texto: la temperatura y la humedad no se dibujan en la curva (no comparten el eje de oxígeno). La página
+`principal` **no** lleva el ambiente. Sin alarma sonora ni relevos.
 
 **Componente `s0` (Waveform):**
 

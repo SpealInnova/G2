@@ -404,7 +404,7 @@ class PruebasMigracion010a011(unittest.TestCase):
                     con.execute("INSERT INTO calibracion (ts_ms, ts_confiable, arranque_id, mono_ms, sensor_id, tipo, origen,"
                                 " resultado) VALUES (3000, 1, 1, 6, 1, 'puntos', 'local', 'ok')")
 
-                self.assertEqual(migraciones.migrar(con), 11)
+                self.assertEqual(migraciones.migrar(con), 12)
 
                 filas = [tuple(f) for f in con.execute(
                     "SELECT tipo, offset_pct, ganancia, bajo_ref_pct, bajo_mv, alto_mv, rev, vigente FROM calibracion ORDER BY id")]

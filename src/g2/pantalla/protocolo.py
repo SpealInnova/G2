@@ -28,6 +28,7 @@ PAGINAS = {0x00: "principal", 0x01: "alarmas", 0x02: "config", 0x03: "red", 0x04
            0x0A: "grafica"}
 CODIGO_PAGINA = {nombre: codigo for codigo, nombre in PAGINAS.items()}
 PAGINA_CARGADA = 0xFE                       # CC comun a todas las paginas (Postinitialize)
+PERDIO_LA_VIGIA = 0xFD                      # CC comun: la vigia de la pantalla perdio la señal de la Pi y pinto su aviso (D-050)
 
 CONTROLES: dict[int, dict[int, str]] = {
     0x00: {0x01: "b_alarmas", 0x02: "b_config", 0x03: "b_red", 0x04: "b_calib",
@@ -84,6 +85,12 @@ class PantallaEncendida:
 
 
 @dataclass(frozen=True)
+class VigiaPerdida:
+    """La vigia del .HMI no recibio la señal de vida de la Pi y pinto su propio aviso: hay que repintar la pagina."""
+    pagina: str
+
+
+@dataclass(frozen=True)
 class TocarPantalla:
     """Toque en cualquier punto de la pantalla (llega con ``sendxy=1``): sirve para saber que alguien la esta usando."""
     x: int
@@ -122,7 +129,7 @@ class Desconocido:
     datos: bytes
 
 
-Evento = (Toque | PaginaCargada | PantallaEncendida | TocarPantalla | ListoParaDatos | DatosRecibidos
+Evento = (Toque | PaginaCargada | PantallaEncendida | VigiaPerdida | TocarPantalla | ListoParaDatos | DatosRecibidos
           | RespuestaNumero | RespuestaTexto | CodigoResultado | Desconocido)
 
 
@@ -137,6 +144,8 @@ def interpretar(trama: bytes) -> Evento:
         nombre_pagina = PAGINAS.get(pagina, f"pagina?{pagina:02X}")
         if control == PAGINA_CARGADA:
             return PaginaCargada(nombre_pagina)
+        if control == PERDIO_LA_VIGIA:
+            return VigiaPerdida(nombre_pagina)
         nombre = CONTROLES.get(pagina, {}).get(control, f"control?{control:02X}")
         return Toque(nombre_pagina, nombre, pulsado != 0)
     if tipo == 0x88 and len(trama) == 1:
@@ -175,6 +184,8 @@ def describir(evento: Evento) -> str:
         return f"pagina cargada: {evento.pagina}"
     if isinstance(evento, PantallaEncendida):
         return "pantalla encendida (lista)"
+    if isinstance(evento, VigiaPerdida):
+        return f"la vigia de la pantalla perdio la señal de la Pi: {evento.pagina}"
     if isinstance(evento, TocarPantalla):
         return f"toque en ({evento.x}, {evento.y})" + (" (pulsado)" if evento.pulsado else " (soltado)")
     if isinstance(evento, ListoParaDatos):
@@ -221,6 +232,8 @@ def orden_pagina(nombre: str) -> str:
     return f"page {nombre}"
 
 
+ORDEN_VIGIA_VIVO = "principal.va_vivo.val=1"            # señal de vida de la Pi: la vigia del .HMI la espera cada pocos segundos (D-050)
+ORDEN_VIGIA_FIN_ARRANQUE = "principal.va_arranque.val=0"   # la Pi ya esta: se acaba el aviso "Iniciando el sistema..."
 ORDEN_SONIDO_ALARMA = "play 0,1,0"          # canal 0, audio 1 (alarma.wav), una vez
 ORDEN_SONIDO_CALIBRANDO = "play 0,2,0"      # canal 0, audio 2 (calibrando.wav, la voz que dice «Calibrando»), una vez
 ORDEN_LEER_PROTOCOLO = "get principal.proto.val"

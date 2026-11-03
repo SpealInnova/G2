@@ -73,6 +73,13 @@ def vista_principal(estado: Mapping | None, *, nucleo_responde: bool, fase_encen
     return v
 
 
+def texto_ambiente(ambiente: Mapping) -> str:
+    """``24.5 °C   55 %`` o ``-- °C   -- %`` si no hay lectura vigente."""
+    temperatura, humedad = ambiente.get("temperatura_c"), ambiente.get("humedad_pct")
+    return (f"{'--' if temperatura is None else format(temperatura, '.1f')} °C   "
+            f"{'--' if humedad is None else format(humedad, '.0f')} %")
+
+
 def texto_historial(alarma: Mapping) -> str:
     """``DD/MM HH:MM S1 BAJO`` (hora local) para una fila del historial reciente; las alarmas del
     sistema, que no son de un sensor, van sin ``S#``."""
@@ -107,7 +114,8 @@ def vista_alarmas(config: Mapping[str, float], historial: list[Mapping]) -> Vist
 def vista_grafica(estado: Mapping | None, *, nucleo_responde: bool, marcas: tuple[str, str, str],
                   ventana: str) -> Vista:
     """Pagina ``grafica``: las marcas del eje vertical (arriba, en medio, abajo), lo que cubre el eje del tiempo y el
-    valor actual de cada sensor con el color de su linea (rojo si esta en alarma, gris si no tiene senal). La curva
+    valor actual de cada sensor con el color de su linea (rojo si esta en alarma, gris si no tiene senal) y, si el equipo
+    lee el DHT22, la temperatura y la humedad del ambiente (rojo si el sensor falla, D-051). La curva
     misma no es un texto: la dibujan las ordenes ``add`` / ``addt`` (ver ``grafica.HistorialGrafica``)."""
     v: Vista = {"grafica.y_max.txt": marcas[0], "grafica.y_med.txt": marcas[1], "grafica.y_min.txt": marcas[2],
                 "grafica.x_ini.txt": ventana}
@@ -124,6 +132,11 @@ def vista_grafica(estado: Mapping | None, *, nucleo_responde: bool, marcas: tupl
         valor = s.get("texto_o2", "--.-") if nucleo_responde and s else "--.-"
         v[f"grafica.v{i}.txt"] = f"S{i}  {valor} %  {texto}"
         v[f"grafica.v{i}.pco"] = pco
+    ambiente = (estado or {}).get("ambiente")
+    if ambiente is not None:                                         # solo si el equipo lee el DHT22 (D-051)
+        ambiente = ambiente if nucleo_responde else {}
+        v["grafica.amb.txt"] = texto_ambiente(ambiente)
+        v["grafica.amb.pco"] = COLOR["alarma"] if ambiente.get("falla") else COLOR["texto_suave"]
     return v
 
 

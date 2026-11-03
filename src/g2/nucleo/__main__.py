@@ -21,10 +21,12 @@ from pathlib import Path
 
 from g2 import __version__, ipc, supervision
 from g2.almacenamiento.almacen import Almacen
+from g2.hardware.dht22 import Dht22, DhtSimulado
 from g2.nucleo import notificacion
 from g2.nucleo.fuentes import FuenteAds1263, FuenteSimulada
 from g2.nucleo.nucleo import Nucleo
 from g2.nucleo.salud import MedidorLinux
+from g2.nucleo.servicio_ambiente import ServicioAmbiente
 from g2.nucleo.servicio_red import ServicioRed
 from g2.nucleo.servicio_reportes import ServicioReportes
 from g2.red.gestor import GestorRed
@@ -39,6 +41,17 @@ def _linea(estado: dict) -> str:
                           + (" (acusada)" if s["acusada"] else "") for s in estado["sensores"])
     return (f"{sensores} | aviso: {estado['aviso']} | sonido {'SI' if estado['sonar'] else 'no'}"
             f" | relevos bajo={int(estado['rele_bajo'])} alto={int(estado['rele_alto'])}")
+
+
+def _servicio_ambiente(almacen: Almacen, emulado: bool) -> ServicioAmbiente | None:
+    """El servicio del DHT22, o ``None`` si ``ambiente.activo`` esta apagado. Con ``--emulado`` lee un sensor falso."""
+    if not almacen.config_tipada("ambiente.activo"):
+        return None
+    if emulado:
+        lector = DhtSimulado().leer
+    else:
+        lector = Dht22(int(almacen.config_tipada("ambiente.pin_gpio"))).leer
+    return ServicioAmbiente(lector)
 
 
 def main() -> int:
@@ -83,11 +96,14 @@ def main() -> int:
     publicador = ipc.PublicadorEstado(carpeta_run) if carpeta_run else None
     servicio_red = None if args.emulado else ServicioRed(GestorRed())     # en un PC no hay nmcli
     servicio_reportes = ServicioReportes(ruta)
+    servicio_ambiente = _servicio_ambiente(almacen, args.emulado)
     nucleo = Nucleo(almacen, fuente, medidor=MedidorLinux(ruta.parent, ruta), servicio_red=servicio_red,
-                    servicio_reportes=servicio_reportes)
+                    servicio_reportes=servicio_reportes, servicio_ambiente=servicio_ambiente)
     if servicio_red is not None:
         servicio_red.iniciar()
     limpio = nucleo.iniciar(supervision.tomar_aviso(carpeta_run))     # la nota de g2-uplink, si lo reinicio
+    if servicio_ambiente is not None:
+        servicio_ambiente.iniciar()                                   # despues de iniciar(): ya tiene el intervalo configurado
     print(f"g2-core {__version__} en marcha. Base: {ruta}. "
           f"Cierre anterior {'ordenado' if limpio else 'NO ordenado'}. Ctrl+C para salir.")
     notificacion.listo(f"g2-core {__version__} en marcha")          # systemd: ya arranco
@@ -112,6 +128,8 @@ def main() -> int:
         if servicio_red is not None:
             servicio_red.detener()
         servicio_reportes.detener()
+        if servicio_ambiente is not None:
+            servicio_ambiente.detener()
         nucleo.cerrar()
         almacen.cerrar()
         if contexto is not None:

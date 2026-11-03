@@ -28,11 +28,16 @@ from g2.nucleo.alarmas import ORIGEN, MotorAlarmas, Umbrales
 from g2.nucleo.calibracion import CalibracionPunto, Punto, Puntos, ResultadoCalibracion
 from g2.nucleo.fuentes import FuenteTension
 from g2.nucleo.salud import Medidor, ObservadorSalud
+from g2.nucleo.servicio_ambiente import AcumuladorAmbiente, Muestra, ServicioAmbiente
 from g2.nucleo.servicio_red import ServicioRed
 from g2.nucleo.servicio_reportes import ServicioReportes
 from g2.red.gestor import ErrorRed, redactar, validar_credenciales
 from g2.reportes import rango as rango_reporte
 from g2.nucleo.salidas import SalidasAlarma, SalidasEmuladas
+
+
+FALLOS_AMBIENTE_PARA_AVISAR = 3                  # lecturas malas seguidas del DHT22 antes de dejar el evento PER_FALLA
+NOMBRE_AMBIENTE = "ambiente"                     # nombre del periferico en la tabla periferico
 
 
 @dataclass
@@ -56,10 +61,12 @@ class Nucleo:
                  medidor: Medidor | None = None,
                  ejecutor: Callable[[list[str]], None] | None = None,
                  servicio_red: ServicioRed | None = None,
-                 servicio_reportes: ServicioReportes | None = None) -> None:
+                 servicio_reportes: ServicioReportes | None = None,
+                 servicio_ambiente: ServicioAmbiente | None = None) -> None:
         """``medidor``: mide la salud de la Pi (sin el, no se registra ni se alarma por la salud; asi las
         pruebas no dependen de la maquina). ``ejecutor``: lanza un comando del sistema (reiniciar); en
-        las pruebas se sustituye para no reiniciar nada."""
+        las pruebas se sustituye para no reiniciar nada. ``servicio_ambiente``: lee la temperatura y la humedad
+        (D-051); sin el no se guarda ni se muestra nada del ambiente."""
         self.a = almacen
         self.fuente = fuente
         self.salidas = salidas or SalidasEmuladas()
@@ -70,6 +77,14 @@ class Nucleo:
         self.red = servicio_red
         self._cambio_red: tuple[int, str] | None = None           # (id del comando, nombre de la red) en curso
         self.reportes = servicio_reportes
+        self.ambiente = servicio_ambiente
+        self._amb_acumulador = AcumuladorAmbiente()
+        self._amb_inicio_s = 0.0                                  # donde empezo el intervalo de guardado del ambiente
+        self._amb_id: int | None = None                           # periferico.id del DHT22
+        self._amb_ultima: Muestra | None = None                   # la ultima lectura buena
+        self._amb_fallos = 0                                      # lecturas malas seguidas
+        self._amb_en_falla = False                                # ya se dejo PER_FALLA y aun no volvio
+        self._amb_visto = False                                   # el sensor contesto alguna vez desde que arranco el nucleo
         self._reporte: tuple[int, str, str] | None = None         # (id del comando, desde, hasta) del reporte en curso
         self._enlace_plataforma: str | None = None                # ultimo estado del enlace que aviso g2-uplink
         self.calibracion: CalibracionPunto | None = None          # la calibracion de un punto en curso (D-048, D-049)
@@ -116,12 +131,19 @@ class Nucleo:
         self.umbrales = Umbrales.desde_almacen(self.a)
         self._ultima_config_s = ahora
         self._inicio_periodo_s = ahora
+        if self.ambiente is not None:
+            self._amb_id = self.a.periferico_asegurar(
+                nombre=NOMBRE_AMBIENTE, tipo="dht22", bus="gpio",
+                direccion=f"GPIO{int(self.a.config_tipada('ambiente.pin_gpio'))}")
+            self._amb_inicio_s = ahora
+            self.ambiente.intervalo_s = float(self.a.config_tipada("ambiente.intervalo_lectura_s"))
         return limpio
 
     def cerrar(self) -> None:
         """Cierre ordenado: guarda lo que haya del intervalo en curso y marca el apagado limpio."""
         self._cancelar_calibracion("el nucleo se detuvo")        # (no hace nada si no hay una en curso)
         self._guardar_periodo(self._mono())
+        self._guardar_ambiente(self._mono())
         if self.motor is not None:
             self.motor.guardar_picos()                 # los extremos de las alarmas que sigan abiertas
         self.a.cerrar_limpio()
@@ -155,6 +177,8 @@ class Nucleo:
         if ahora - self._ultima_config_s >= intervalo_pantalla:      # la configuracion puede cambiar
             self.umbrales = Umbrales.desde_almacen(self.a)
             self._ultima_config_s = ahora
+            if self.ambiente is not None:
+                self.ambiente.intervalo_s = float(self.a.config_tipada("ambiente.intervalo_lectura_s"))
         valores: dict[int, float | None] = {}
         terminada: ResultadoCalibracion | None = None
         for sensor in self.sensores:
@@ -181,6 +205,7 @@ class Nucleo:
             cambios += self.salud.paso(ahora)
         self._atender_red()
         self._atender_reporte()
+        self._atender_ambiente(ahora)
         if terminada is not None:
             self._terminar_calibracion(terminada, ahora)
         if ahora - self._inicio_periodo_s >= float(self.a.config_tipada("muestreo.intervalo_guardado_s")):
@@ -202,6 +227,59 @@ class Nucleo:
                                     o2_prom=r.o2_prom, o2_min=r.o2_min, o2_max=r.o2_max,
                                     mv_prom=r.mv_prom, calidad=r.calidad)
 
+    # ------------------------------------------------------------------ ambiente: temperatura y humedad (D-051)
+    def _atender_ambiente(self, ahora_s: float) -> None:
+        """Recoge las lecturas del DHT22, deja el evento si el sensor falla o vuelve, y guarda el intervalo si toca."""
+        if self.ambiente is None:
+            return
+        for muestra in self.ambiente.tomar():
+            self._amb_acumulador.agregar(muestra)
+            if muestra.buena:
+                self._amb_ultima, self._amb_visto, self._amb_fallos = muestra, True, 0
+                if self._amb_en_falla:
+                    self._amb_en_falla = False
+                    self.a.registrar_evento("PER_RECUPERADO", ORIGEN, periferico_id=self._amb_id,
+                                            mensaje="El sensor de temperatura y humedad volvió a responder")
+            else:
+                self._amb_fallos += 1
+                if self._amb_fallos >= FALLOS_AMBIENTE_PARA_AVISAR and not self._amb_en_falla:
+                    self._amb_en_falla = True
+                    self.a.registrar_evento("PER_FALLA", ORIGEN, periferico_id=self._amb_id,
+                                            mensaje=f"El sensor de temperatura y humedad no responde ({muestra.error})"[:200],
+                                            datos={"error": muestra.error})
+        if ahora_s - self._amb_inicio_s >= float(self.a.config_tipada("ambiente.intervalo_guardado_s")):
+            self._guardar_ambiente(ahora_s)
+
+    def _guardar_ambiente(self, ahora_s: float) -> None:
+        """Guarda temperatura y humedad del intervalo (promedio, minimo y maximo). Si el sensor falla despues de haber
+        funcionado queda un hueco (NULL con calidad 'sin datos'); si nunca contesto no se llena la base de huecos: ya
+        queda el evento de falla."""
+        if self.ambiente is None or self._amb_id is None:
+            return
+        periodo_ms = int((ahora_s - self._amb_inicio_s) * 1000)
+        self._amb_inicio_s = ahora_s
+        if periodo_ms <= 0 or self._amb_acumulador.n_intentos == 0:
+            return
+        resumen = self._amb_acumulador.cerrar()
+        if resumen.n_buenas == 0 and not self._amb_visto:
+            return
+        for magnitud, estadistica in (("temperatura_c", resumen.temperatura), ("humedad_pct", resumen.humedad)):
+            prom, minimo, maximo = estadistica or (None, None, None)
+            self.a.insertar_medicion_periferico(
+                periferico_id=self._amb_id, magnitud=magnitud, periodo_ms=periodo_ms, n_muestras=resumen.n_buenas,
+                prom=prom, minimo=minimo, maximo=maximo, calidad=resumen.calidad)
+
+    def _estado_ambiente(self, ahora_s: float) -> dict | None:
+        """Lo que se muestra del ambiente: la ultima lectura buena, o vacio si es vieja (no se muestra un valor viejo
+        como si fuera actual). ``None`` si el equipo no lee el sensor."""
+        if self.ambiente is None:
+            return None
+        vigente = self._amb_ultima is not None and ahora_s - self._amb_ultima.mono_s <= max(120.0, 6 * self.ambiente.intervalo_s)
+        ultima = self._amb_ultima if vigente else None
+        return {"temperatura_c": ultima.temperatura_c if ultima else None,
+                "humedad_pct": ultima.humedad_pct if ultima else None,
+                "falla": self._amb_en_falla}
+
     # ------------------------------------------------------------------ interfaz para la pantalla
     def acusar(self, actor: str) -> int:
         """Boton Acusar de la pantalla (o comando de la plataforma). Devuelve las alarmas acusadas."""
@@ -216,6 +294,9 @@ class Nucleo:
             return                                              # orden mal formada: se ignora
         if orden["tipo"] == "cola_resultado":
             self._registrar_envio(orden)                        # contabilidad de g2-uplink: no es un comando
+            return
+        if orden["tipo"] == "pantalla_reiniciada":
+            self._registrar_reinicio_pantalla(orden)            # una observacion de g2-ui, no un comando de nadie
             return
         origen = orden.get("origen") if orden.get("origen") in ("pantalla", "plataforma", "local") else "local"
         # Las contrasenas NUNCA se guardan: el registro de comandos se sincroniza con la plataforma y entra a la
@@ -265,6 +346,16 @@ class Nucleo:
         else:
             self.a.finalizar_comando(comando_id, "rechazado",
                                      {"motivo": f"tipo de orden desconocido: {orden['tipo']}"})
+
+    def _registrar_reinicio_pantalla(self, orden: dict) -> None:
+        """g2-ui avisa que la pantalla Nextion se reinicio sola (D-050). Queda un evento (los seguidos se agrupan en uno con sus
+        repeticiones) y se le cuenta al observador de salud, que abre ``ALM_PANTALLA_INESTABLE`` si son 5 o mas en 10 minutos."""
+        n = orden.get("reinicios_10min")
+        n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 1
+        self.a.registrar_evento("PANT_REINICIADA", "g2-ui", mensaje=f"La pantalla se reinicio sola ({n} en los ultimos 10 min)",
+                                datos={"reinicios_10min": n})
+        if self.salud is not None:
+            self.salud.registrar_reinicio_pantalla(self._mono())
 
     ESTADOS_ENLACE = ("ok", "sin_enlace", "credencial")
 
@@ -593,7 +684,8 @@ class Nucleo:
                 "alertas_salud": self.salud.codigos_activos() if self.salud is not None else [],
                 "red": self.red.estado() if self.red is not None else None,
                 "reporte": self.reportes.estado() if self.reportes is not None else None,
-                "calibracion": self._estado_calibracion(ahora)}
+                "calibracion": self._estado_calibracion(ahora),
+                "ambiente": self._estado_ambiente(ahora)}
 
     # ------------------------------------------------------------------ ciclo continuo
     def ejecutar(self, detener: Callable[[], bool], *, periodo_s: float = 0.5,

@@ -109,6 +109,7 @@ High-Precision AD HAT con ADS1263: 10 canales (5 pares diferenciales), 32 bits, 
 | Relé 2 (oxígeno alto) | 20 (pin 38) | Según la wiki de Waveshare; función decidida (D-033) |
 | Relé 3 (libre; propuesta: equipo sin vigilancia) | 21 (pin 40) | Según la wiki de Waveshare |
 | LED de alarma | 25 | Propuesta |
+| DHT22 (temperatura y humedad), DATA | 4 (pin 7) | Decidido (D-051); configurable con `ambiente.pin_gpio` |
 
 Notas:
 - En la Raspberry Pi 3 B, el UART principal (PL011) está por omisión conectado al
@@ -133,6 +134,10 @@ Notas:
 
 ## 6. Periféricos y para qué sirven
 
+- **DHT22 (temperatura y humedad), decidido y construido (D-051):** módulo de 3 pines (con su resistencia) en el **GPIO4 (pin 7)**, alimentado a **3,3 V** (pin 1) con GND (pin 6); el
+  sensor suelto de 4 pines necesita 4,7 a 10 kΩ entre DATA y 3,3 V. Se lee con libgpiod v2 (`python3-libgpiod`): la Pi no mide los pulsos con `sleep` sino que el kernel anota la hora de cada
+  flanco (`g2/hardware/dht22.py`). Precisión del DHT22: ±0,5 °C y ±2 a 5 % de humedad relativa; no mide presión (el BME280 de abajo sigue siendo la opción para hPa). **Verificado el 2026-11-03** con el módulo conectado: lee bien (26,1 °C, 51,5 %), pero con algo de
+  pérdida de lecturas que se resuelve reintentando hasta 5 veces (ver D-051); probar con `tools/banco/sonda_dht22.py`. El equipo anterior (CONTEXTO.md) tenía un DHT22 en este mismo pin que dio «no detectado».
 - **Temperatura y humedad (BME280 u otro con presión):** va **muy cerca de los
   sensores de oxígeno**, para medir el ambiente de los sensores (y de la
   Raspberry Pi). No está en la línea de gas. Importa porque el manual da un

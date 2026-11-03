@@ -1010,5 +1010,54 @@ class PruebasTextoDeCalibracion(unittest.TestCase):
         self.assertIn("gas 20.9 % · cero -0.2 %", texto)
 
 
+class PruebasAmbienteEnElReporte(BaseConBase):
+    """Temperatura y humedad (DHT22, D-051) en el resumen del reporte."""
+
+    def medicion(self, magnitud: str, n: int, prom: float, minimo: float, maximo: float) -> None:
+        self.reloj.avanzar(60_000)
+        self.a.insertar_medicion_periferico(periferico_id=self.p, magnitud=magnitud, periodo_ms=60_000, n_muestras=n,
+                                            prom=prom, minimo=minimo, maximo=maximo)
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.p = self.a.periferico_asegurar(nombre="ambiente", tipo="dht22", bus="gpio", direccion="GPIO4")
+
+    def test_resume_minimo_maximo_y_promedio_ponderado(self) -> None:
+        self.lecturas(1)
+        self.medicion("temperatura_c", 6, 20.0, 19.0, 21.0)
+        self.medicion("temperatura_c", 2, 26.0, 25.0, 28.0)
+        self.medicion("humedad_pct", 6, 50.0, 45.0, 55.0)
+        e = self.leer().ambiente
+        self.assertEqual((e["temperatura_c"]["min"], e["temperatura_c"]["max"], e["temperatura_c"]["n"]), (19.0, 28.0, 8))
+        self.assertAlmostEqual(e["temperatura_c"]["prom"], 21.5)                  # (6*20 + 2*26) / 8
+        self.assertEqual(e["humedad_pct"]["prom"], 50.0)
+
+    def test_los_huecos_y_otras_magnitudes_no_cuentan(self) -> None:
+        self.lecturas(1)
+        self.medicion("temperatura_c", 0, None, None, None)
+        self.medicion("presion_hpa", 3, 1013.0, 1012.0, 1014.0)
+        self.assertEqual(self.leer().ambiente, {})
+
+    def test_solo_entran_las_mediciones_del_rango(self) -> None:
+        self.medicion("temperatura_c", 3, 22.0, 21.0, 23.0)
+        self.reloj.avanzar(24 * 3600 * 1000)
+        self.medicion("temperatura_c", 3, 30.0, 29.0, 31.0)
+        self.assertEqual(self.leer(date(2026, 10, 27), date(2026, 10, 27)).ambiente["temperatura_c"]["max"], 23.0)
+
+    def test_el_texto_del_resumen(self) -> None:
+        texto = pdf.texto_ambiente({"temperatura_c": {"n": 8, "min": 19.0, "max": 28.0, "prom": 21.5},
+                                    "humedad_pct": {"n": 6, "min": 45.0, "max": 55.0, "prom": 50.0}})
+        self.assertEqual(texto, "temperatura 19.0 a 28.0 °C (prom. 21.5) · humedad 45.0 a 55.0 % (prom. 50.0)")
+        self.assertIn("humedad", pdf.texto_ambiente({"humedad_pct": {"n": 1, "min": 1.0, "max": 2.0, "prom": 1.5}}))
+
+    def test_el_resumen_del_pdf_lleva_el_renglon_solo_si_hay_ambiente(self) -> None:
+        for ambiente, esperado in (({}, False), ({"temperatura_c": {"n": 1, "min": 20.0, "max": 21.0, "prom": 20.5}}, True)):
+            datos = consulta.DatosReporte("27/10/2026", "27/10/2026", ZONA, 0, 1, [], ambiente=ambiente)
+            lienzo = FalsoLienzo()
+            pdf._Dibujante(lienzo, pdf.Portada(NOMBRE, "", "0.1", DIA_27_MS), datos, 1).portada_resumen()
+            textos = [t for t, _, _ in lienzo.dibujado]
+            self.assertEqual("Ambiente" in textos, esperado)
+
+
 if __name__ == "__main__":
     unittest.main()

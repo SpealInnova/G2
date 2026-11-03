@@ -69,6 +69,20 @@ _LISTA = [
        "Registros que van como maximo en cada envio a la plataforma.", "registros", 10, 2000,
        editable_por=frozenset({"plataforma", "local"})),
 
+    # --- Temperatura y humedad del ambiente, sensor DHT22 (D-051) ------------------------------------------
+    _c("ambiente.activo", "booleano", 1,
+       "Si el equipo lee el sensor de temperatura y humedad (DHT22). Se aplica al reiniciar el nucleo.",
+       editable_por=frozenset({"plataforma", "local"})),
+    _c("ambiente.pin_gpio", "entero", 4,
+       "GPIO (numeracion BCM) al que va el cable de datos del DHT22. Se aplica al reiniciar el nucleo.",
+       "GPIO", 2, 27, editable_por=SOLO_LOCAL),
+    _c("ambiente.intervalo_lectura_s", "entero", 10,
+       "Cada cuanto se lee el DHT22 (el sensor necesita al menos 2 s entre lecturas).", "s", 3, 600,
+       editable_por=frozenset({"plataforma", "local"})),
+    _c("ambiente.intervalo_guardado_s", "entero", 60,
+       "Cada cuanto se guarda un registro de temperatura y humedad en la base (promedio, minimo y maximo).",
+       "s", 10, 3600, editable_por=frozenset({"plataforma", "local"})),
+
     # --- Alarmas de oxigeno (D-027): configurables por pantalla y plataforma ---------------------
     _c("alarma.o2_bajo_pct", "real", 20.0,
        "Alarma de oxigeno bajo: se activa cuando el oxigeno es menor que este valor.",

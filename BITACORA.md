@@ -322,3 +322,15 @@ decisión están en `MEMORIA_TECNICA.md`.
   prueba la pantalla con la configuración anterior. Aparte: reintento al reemplazar el archivo de estado en Windows y una prueba de reportes que dependía de la fecha.
 - D-049 desplegada en la Pi (copia previa de la base, esquema 11, auditoría correcta). Causa de que `v_gas` no abriera el teclado: la Pi aún traía la tabla de controles de la página
   `calibracion` de D-048 (solo `01` a `03`) y el `.HMI` nuevo envía `01` a `07`. La migración 011 conserva como punto bajo las calibraciones de cero en aire ya hechas (S1 +0,04 %, S2 +0,10 %).
+- D-050: arranque de la pantalla y reinicios. Medido: la Pi tarda 30 a 35 s en mostrar datos y la pantalla enciende sola con «Sin alarmas» de texto inicial. Decidido (A): vigía de comunicación en el .HMI
+  (señal de vida de la Pi cada segundo; «Iniciando el sistema...» al encender y «Sin comunicación con el equipo» en rojo si se corta; también cubre un cuelgue de la Pi), especificada en la sección 5.1.
+  Lado de la Pi desplegado: con el .tft actual detecta que no hay vigía y deja de insistir. Reinicios de la pantalla: evento PANT_REINICIADA agrupado y alarma ALM_PANTALLA_INESTABLE con 5 o más en
+  10 min (migración 012); journal persistente en el instalador (falta correrlo con sudo). Reinicios de hoy: 17, una ráfaga de 13 en 20 s sin relación con el sonido; la fuente (distinta de la de la Pi) es la
+  sospecha. 849 pruebas.
+- Temperatura y humedad del ambiente con el sensor DHT22 (D-051), a pedido del usuario: módulo de 3 pines en el GPIO4, solo registrar y mostrar (sin alarmas de límites ni compensación del
+  oxígeno), en pantalla, plataforma y reporte. Lector con libgpiod v2 (el kernel anota la hora de cada flanco; decodificación pura y comprobada con suma y rango), servicio en hilo propio para no
+  frenar el ciclo del núcleo, registro en `medicion_periferico` cada 60 s (promedio, mínimo y máximo; huecos solo si el sensor ya había funcionado), eventos `PER_FALLA` / `PER_RECUPERADO` tras 3
+  lecturas malas, cuatro claves `ambiente.*`, línea opcional de ambiente en la pantalla (al final quedó en la gráfica: `grafica.amb`) y renglón «Ambiente» en el resumen del PDF. Sin migración (las tablas ya existían). 896 pruebas (también
+  en la Pi). Con el sensor ya conectado (misma fecha): lee bien, pero el kernel de la Pi tarda 0,3 a 0,8 ms en armar los flancos y pierde los primeros bits; el decodificador los reconstruye (son ceros, parte alta de la
+  humedad) y se reintenta hasta 5 veces (12 de 12 lecturas buenas). A pedido del usuario la temperatura y la humedad se ven en la página de la **gráfica** (`grafica.amb`), no en la principal. 903 pruebas.
+  Sin desplegar; falta agregar `amb` al `.HMI`.

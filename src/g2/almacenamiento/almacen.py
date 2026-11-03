@@ -334,6 +334,28 @@ class Almacen:
                 "mv_prom": mv_prom, "calidad": calidad,
                 "calibracion_id": self.calibracion_vigente(sensor_id)})
 
+    # ------------------------------------------------------------------ perifericos (D-051)
+    def periferico_asegurar(self, *, nombre: str, tipo: str, bus: str, direccion: str) -> int:
+        """El id del periferico ``nombre``; lo da de alta la primera vez. Si ya existia, actualiza su tipo, bus y direccion
+        (por ejemplo si se cambio el pin del sensor), pero no su ``habilitado``."""
+        with self._transaccion():
+            fila = self.db.execute("SELECT id FROM periferico WHERE nombre = ?", (nombre,)).fetchone()
+            if fila is None:
+                return self._insertar("periferico", {"tipo": tipo, "nombre": nombre, "bus": bus, "direccion": direccion})
+            self.db.execute("UPDATE periferico SET tipo = ?, bus = ?, direccion = ? WHERE id = ?",
+                            (tipo, bus, direccion, fila["id"]))
+            return fila["id"]
+
+    def insertar_medicion_periferico(self, *, periferico_id: int, magnitud: str, periodo_ms: int, n_muestras: int,
+                                     prom: float | None, minimo: float | None, maximo: float | None,
+                                     calidad: int = 0) -> int:
+        """Guarda el agregado de un intervalo de una magnitud de un periferico (``temperatura_c``, ``humedad_pct``).
+        Sin muestras, los valores van NULL: un hueco queda como hueco y no como un cero falso."""
+        with self._transaccion():
+            return self._insertar("medicion_periferico", {
+                **self._tiempo(), "periferico_id": periferico_id, "magnitud": magnitud, "periodo_ms": periodo_ms,
+                "n_muestras": n_muestras, "prom": prom, "minimo": minimo, "maximo": maximo, "calidad": calidad})
+
     def registrar_salud(self, *, motivo: str = "SYS_SALUD_PERIODICA", **campos) -> int:
         """Estado de la Raspberry Pi. ``campos``: cpu_temp_c, cpu_pct, mem_pct, disco_pct,
         throttled, tension_5v, corriente_ma, red_ok, wifi_rssi_dbm, db_bytes, uptime_s."""

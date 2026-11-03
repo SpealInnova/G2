@@ -37,9 +37,12 @@ MARGEN_DISCO_PCT, MARGEN_DISCO_GB = 2.0, 0.5
 ALM_TEMP, ALM_RAM = "ALM_RPI_TEMP_ALTA", "ALM_RPI_RAM_ALTA"
 ALM_DISCO_BAJO, ALM_DISCO_CRITICO = "ALM_DISCO_ESPACIO_BAJO", "ALM_DISCO_ESPACIO_CRITICO"
 ALM_VOLTAJE = "ALM_RPI_BAJO_VOLTAJE"
-CODIGOS = (ALM_TEMP, ALM_RAM, ALM_DISCO_BAJO, ALM_DISCO_CRITICO, ALM_VOLTAJE)
+ALM_PANTALLA = "ALM_PANTALLA_INESTABLE"
+CODIGOS = (ALM_TEMP, ALM_RAM, ALM_DISCO_BAJO, ALM_DISCO_CRITICO, ALM_VOLTAJE, ALM_PANTALLA)
+VENTANA_PANTALLA_S = 600.0                        # la pantalla es inestable si se reinicia 5 veces en 10 min (D-050)
+REINICIOS_PANTALLA = 5
 ETIQUETAS = {ALM_TEMP: "PI TEMP ALTA", ALM_RAM: "PI RAM ALTA", ALM_DISCO_BAJO: "DISCO BAJO",
-             ALM_DISCO_CRITICO: "DISCO CRÍTICO", ALM_VOLTAJE: "PI BAJO VOLTAJE"}
+             ALM_DISCO_CRITICO: "DISCO CRÍTICO", ALM_VOLTAJE: "PI BAJO VOLTAJE", ALM_PANTALLA: "PANTALLA INESTABLE"}
 
 
 @dataclass(frozen=True)
@@ -197,6 +200,7 @@ class ObservadorSalud:
         self.ultima = Medicion()
         self._conds = {codigo: Condicion(codigo, None) for codigo in CODIGOS}
         self._t_muestra = self._t_registro = None  # type: float | None
+        self._reinicios_pantalla: list[float] = []        # instantes (monotonicos) en que se reinicio la pantalla Nextion
 
     def recuperar(self) -> int:
         """Tras un reinicio, retoma las alarmas de salud que seguian abiertas en la base."""
@@ -207,6 +211,10 @@ class ObservadorSalud:
                 cond.estado, cond.alarma_id = ACTIVA, alarma_id
                 n += 1
         return n
+
+    def registrar_reinicio_pantalla(self, ahora: float) -> None:
+        """Anota que la pantalla Nextion se reinicio (lo avisa g2-ui). La alarma se evalua con las demas, cada ``MUESTREO_S``."""
+        self._reinicios_pantalla.append(ahora)
 
     def etiquetas_activas(self) -> list[str]:
         return [ETIQUETAS[c.codigo] for c in self._conds.values() if c.estado == ACTIVA]
@@ -268,6 +276,10 @@ class ObservadorSalud:
                 bajo_voltaje = False
             self._avanzar(ALM_VOLTAJE, bajo_voltaje, not bajo_voltaje, ahora, None, None,
                           f"La Raspberry Pi detecta voltaje de alimentacion bajo (estado {m.throttled})", m, cambios)
+        self._reinicios_pantalla = [t for t in self._reinicios_pantalla if ahora - t < VENTANA_PANTALLA_S]
+        n = len(self._reinicios_pantalla)
+        self._avanzar(ALM_PANTALLA, n >= REINICIOS_PANTALLA, n == 0, ahora, n, REINICIOS_PANTALLA,
+                      f"La pantalla se reinicio {n} veces en los ultimos 10 min: revisar su alimentacion", m, cambios)
         return cambios
 
     def _avanzar(self, codigo: str, entra: bool, sale: bool, ahora: float, valor, umbral, mensaje: str,

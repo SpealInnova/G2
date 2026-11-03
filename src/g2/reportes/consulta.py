@@ -99,6 +99,7 @@ class DatosReporte:
     alarmas: list[Alarma] = field(default_factory=list)
     cambios_sensor: list[CambioSensor] = field(default_factory=list)
     calibraciones: list[dict] = field(default_factory=list)
+    ambiente: dict[str, dict] = field(default_factory=dict)       # magnitud -> {"n", "min", "max", "prom"} (D-051)
 
     def periodos_s(self) -> list[int]:
         """Los intervalos de guardado que aparecen en el rango, en segundos enteros y del mas al menos usado (los que
@@ -124,6 +125,17 @@ class DatosReporte:
                         for n, v in medidas.items()}
         return {"filas": len(self.filas), "estadisticas": estadisticas, "con_alerta": con_alerta,
                 "hora_no_confiable": no_confiables, "calidad_anomala": anomalas, "periodos_s": self.periodos_s()}
+
+
+def leer_ambiente(db: sqlite3.Connection, inicio_ms: int, fin_ms: int) -> dict[str, dict]:
+    """Temperatura y humedad del rango: el minimo y el maximo de todo el rango y el promedio ponderado por el numero de
+    lecturas de cada registro. Solo cuentan los registros con lecturas; una magnitud sin ninguna no aparece."""
+    filas = db.execute(
+        "SELECT magnitud, SUM(n_muestras) AS n, MIN(minimo) AS minimo, MAX(maximo) AS maximo, "
+        "SUM(prom * n_muestras) / SUM(n_muestras) AS prom FROM medicion_periferico "
+        "WHERE ts_ms >= ? AND ts_ms < ? AND n_muestras > 0 AND magnitud IN ('temperatura_c', 'humedad_pct') "
+        "GROUP BY magnitud", (inicio_ms, fin_ms)).fetchall()
+    return {f["magnitud"]: {"n": f["n"], "min": f["minimo"], "max": f["maximo"], "prom": f["prom"]} for f in filas}
 
 
 def texto_calidad(calidad: int) -> str:
@@ -260,6 +272,7 @@ def construir(db: sqlite3.Connection, desde, hasta, nombre_zona: str) -> DatosRe
     datos.cambios_sensor = leer_cambios_sensor(db, inicio, fin)
     por_sensor = [[a for a in datos.alarmas if a.sensor_id == sid] for sid in ids] + [[], []]
     datos.filas = armar(medidas[0], medidas[1], por_sensor[0], por_sensor[1])
+    datos.ambiente = leer_ambiente(db, inicio, fin)
     datos.calibraciones = [dict(f) for f in db.execute(
         "SELECT c.id, c.ts_ms, c.sensor_id, c.tipo, c.gas_pct, c.gas_certificado, c.offset_pct, c.resultado, "
         "c.vigente, c.actor, c.ganancia, c.bajo_ref_pct, c.alto_ref_pct FROM calibracion c WHERE c.vigente = 1 OR (c.ts_ms >= ? AND c.ts_ms < ?) "

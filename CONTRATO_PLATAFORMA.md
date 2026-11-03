@@ -128,6 +128,12 @@ Notas para el diseño:
   `(equipo_id, tabla, registro_id)` y actualizar solo si `rev` es mayor. Alcanza para confirmar y no perder nada; los tableros se construyen después sobre ella.
 - Cada `lectura` es el **promedio, mínimo y máximo de un intervalo** (`periodo_ms`), uno por sensor; no son las muestras de 200 ms. `calidad` es un
   conjunto de bits (1 saturada baja, 2 saturada alta, 4 en calibración, 8 sensor apagado, 16 inestable, 32 sin datos, 64 fuera de rango).
+- `medicion_periferico` (D-051) trae hoy la temperatura y la humedad del **ambiente** del equipo (sensor DHT22, junto a los sensores de oxígeno), una fila por magnitud y por
+  intervalo (cada 60 s por omisión, `ambiente.intervalo_guardado_s`): `magnitud` vale `temperatura_c` (°C) o `humedad_pct` (% de humedad relativa); `prom`, `minimo` y `maximo` son del
+  intervalo y `n_muestras` el número de lecturas buenas (por omisión una cada 10 s). `calidad` usa los mismos bits que `lectura` (16 = hubo lecturas fallidas en el intervalo; 32 = ninguna lectura buena: los
+  valores van `null`, es un hueco y no un cero). **Identifique la magnitud por `magnitud`, no por `periferico_id`**, que es local al equipo (la tabla `periferico` no viaja); si más adelante
+  se agregan otros periféricos (presión, vibración) traerán sus propias magnitudes. La foto en vivo (sección 4) no lleva el ambiente. Si el equipo no tiene el sensor o falla, no se envían filas
+  (no se llena de huecos) y el evento `PER_FALLA` (con `periferico_id`) lo avisa; `PER_RECUPERADO` avisa que volvió.
 - `auditoria_cadena` permite verificar en la plataforma que no se alteró nada: cada fila encadena la huella del registro con la anterior.
 - Las contraseñas **nunca** viajan: las órdenes de red se guardan con `***` y el PIN solo existe como huella en el equipo. Los reportes en PDF no se envían.
 - `calibracion.tipo` vale `fabrica`, `offset_cero`, `spoc_boton` o `puntos` (calibración con gas patrón, D-049). En `puntos`: `O₂ = ganancia × (mV / mv_por_pct) + offset_pct`;

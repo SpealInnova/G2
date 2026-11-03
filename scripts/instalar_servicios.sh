@@ -9,6 +9,8 @@
 # no envia nada hasta que se active, ver README). Tambien instala la regla de
 # polkit (systemd/50-g2.rules) que permite a g2-core reiniciar los servicios y el equipo, cambiar de red y montar la
 # memoria USB de los reportes cuando lo pide la pantalla; y las librerias de los reportes (python3-reportlab, python3-pypdf).
+# Deja ademas los registros del sistema (journal) guardados entre apagados, con tope de tamano (D-050): sin eso se borran al
+# apagar y no queda historial de, por ejemplo, los reinicios de la pantalla.
 # Mientras corren ocupan el ADC (g2-core) y el puerto serie (g2-ui): para usar las herramientas de banco
 # (tools/banco) hay que detener el servicio correspondiente (sudo systemctl stop g2-core / g2-ui) y volver
 # a iniciarlo despues.
@@ -37,6 +39,20 @@ fi
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3-reportlab python3-pypdf
 # g2-uplink (D-046): cliente HTTPS (requests) y firmas/cifrado de la etapa 2 (cryptography).
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3-requests python3-cryptography
+
+# Registros del sistema que sobreviven a los apagados (D-050), con tope para no llenar la tarjeta SD.
+install -d -m 0755 /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/g2.conf <<'FIN_JOURNAL'
+[Journal]
+Storage=persistent
+SystemMaxUse=50M
+SystemKeepFree=500M
+MaxRetentionSec=30day
+FIN_JOURNAL
+install -d -m 2755 /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+systemctl restart systemd-journald
+journalctl --flush 2>/dev/null || true
 
 # g2-core guarda en esta carpeta; el usuario pi debe poder escribirla.
 install -d -o pi -g pi -m 0755 /home/pi/g2/datos

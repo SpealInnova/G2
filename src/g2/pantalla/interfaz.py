@@ -51,7 +51,7 @@ from g2.pantalla import teclado as tec
 from g2.pantalla import texto as txt
 from g2.pantalla import vistas
 from g2.pantalla.protocolo import (CodigoResultado, DatosRecibidos, Evento, ListoParaDatos, PaginaCargada,
-                                   PantallaEncendida, RespuestaNumero, TocarPantalla, Toque)
+                                   PantallaEncendida, RespuestaNumero, TocarPantalla, Toque, VigiaPerdida)
 from g2.red.gestor import ErrorRed, validar_credenciales
 from g2.reportes import rango as rango_reporte
 from g2.seguridad import pin as seguridad_pin
@@ -75,6 +75,9 @@ ESPERA_CARGA_S = 2.0                     # tras ordenar una pagina, lo que se es
 USB_CADA_S = 3.0                         # cada cuanto se revisa la memoria USB mientras se mira la pagina de reportes
 ESPERA_ORDEN_REPORTE_S = 6.0             # tras pedir un reporte, lo que se espera a que el nucleo lo acepte
 ESPERA_ORDEN_CALIBRACION_S = 6.0         # lo mismo para una calibracion
+VIGIA_CADA_S = 1.0                       # cada cuanto la Pi le da su señal de vida a la vigia del .HMI (D-050)
+RECHAZOS_PARA_DESACTIVAR_VIGIA = 3       # ordenes de la vigia rechazadas por la pantalla antes de dejar de mandarlas
+VENTANA_REINICIOS_PANTALLA_S = 600.0     # los reinicios de la pantalla que se cuentan juntos al avisar al nucleo
 REFERENCIA_AIRE = 20.9                   # el atajo `Aire` de la pagina de calibracion
 _SIN_VER = object()                       # marca: todavia no se ha visto el estado del cambio de red
 
@@ -179,6 +182,12 @@ class Interfaz:
         self._rep_visto: object = _SIN_VER                       # numero del ultimo resultado ya visto
         self._rep_enviado = float("-inf")                        # cuando se pidio el ultimo reporte (hasta que el nucleo lo acepte)
         self._toques_bloqueados = False                          # la pantalla de verdad ignora los toques de la pagina actual
+        # ---- vigia de comunicacion y reinicios de la pantalla (D-050) ----
+        self._vigia_activa = True                                # False si el .tft no trae las variables de la vigia
+        self._vigia_rechazos = 0
+        self._t_vigia = float("-inf")                            # cuando se mando la ultima señal de vida
+        self._fin_arranque_pendiente = True                      # falta decirle a la pantalla que la Pi ya esta
+        self._reinicios_pantalla: list[float] = []               # cuando se reinicio la pantalla (ultimos 10 min)
         # ---- calibracion de cero en aire (D-048) ----
         self._calibraciones: dict[int, dict] = {}                # la calibracion vigente de cada sensor calibrado
         self._cal_sensor = 1                                     # el sensor elegido en la pagina de calibracion (1 o 2)
@@ -252,6 +261,9 @@ class Interfaz:
             self._fijar_volumen()                            # el .HMI vuelve a poner el suyo al encender: la Pi lo corrige
             self.pagina, self._proto_pedido = None, False
             self._toques_bloqueados = False                  # al reiniciarse vuelve con los toques habilitados
+            self._vigia_activa, self._vigia_rechazos = True, 0   # puede haber traido un .tft nuevo con la vigia
+            self._fin_arranque_pendiente, self._t_vigia = True, float("-inf")
+            self._avisar_reinicio_de_pantalla(ahora)
             self._soltar_teclado()
             self._soltar_texto()
             self._confirmacion = None
@@ -291,6 +303,10 @@ class Interfaz:
                 else:
                     REGISTRO.error("la pantalla trae el protocolo %d y esta interfaz espera el %d: "
                                    "cargue el .tft que corresponde", evento.valor, P.VERSION_PROTOCOLO)
+        elif isinstance(evento, VigiaPerdida):
+            REGISTRO.warning("la vigia de la pantalla perdio la señal de la Pi en la pagina %s: se repinta todo", evento.pagina)
+            self._cache.clear()                              # la vigia piso textos y colores que la Pi cree que siguen puestos
+            self._t_refresco, self._t_vigia = float("-inf"), float("-inf")
         elif isinstance(evento, TocarPantalla):
             self._ultimo_toque = self._reloj()
         elif isinstance(evento, ListoParaDatos):
@@ -303,7 +319,8 @@ class Interfaz:
                 self._grafica_disponible = False
                 REGISTRO.error("la pantalla no tiene la pagina 'grafica': la grafica queda desactivada hasta que se "
                                "cargue un .tft que la incluya")
-            elif evento.codigo != 0x01 and not self._rechazo_de_la_grafica(evento.descripcion):
+            elif (evento.codigo != 0x01 and not self._rechazo_de_la_grafica(evento.descripcion)
+                  and not self._rechazo_de_la_vigia(evento.codigo)):
                 REGISTRO.warning("la pantalla rechazo una orden: %s (ultimas enviadas: %s)", evento.descripcion,
                                  " | ".join(self._ultimas_ordenes))
         elif isinstance(evento, Toque):
@@ -1061,6 +1078,7 @@ class Interfaz:
             self._enviar_cambios(vista, escapar=self.pagina == "texto")
         self._decidir_grafica(ahora, estado if responde else None)
         self._atender_grafica(ahora)
+        self._dar_senal_de_vida(ahora)
         if (responde and estado.get("sonar") and ahora - self._t_sonido >= self.repetir_sonido_s
                 and ahora >= self._sonido_callado_hasta):
             self._t_sonido = self._t_play = ahora
@@ -1069,6 +1087,45 @@ class Interfaz:
               and ahora >= self._sonido_callado_hasta):
             self._t_sonido = self._t_play = ahora      # una alarma del otro sensor tiene prioridad (la rama de arriba)
             self._tx(P.ORDEN_SONIDO_CALIBRANDO)       # la voz «Calibrando», mientras dure
+
+    # ------------------------------------------------------------------ vigia de comunicacion (D-050)
+    def _dar_senal_de_vida(self, ahora: float) -> None:
+        """Cada segundo le dice a la pantalla que la Pi (g2-ui) sigue viva. La vigia del .HMI espera esa señal: si deja de llegar
+        (la Pi se colgo o aun no arranca) la propia pantalla avisa y borra los valores, en vez de dejar los ultimos como actuales.
+        Es lo ultimo que hace cada vuelta, asi que si g2-ui se atasca la señal se corta sola."""
+        if (not self._vigia_activa or self.pagina is None or self.protocolo_compatible is False
+                or ahora - self._t_vigia < VIGIA_CADA_S):
+            return
+        self._t_vigia = ahora
+        self._tx(P.ORDEN_VIGIA_VIVO)
+        if self._fin_arranque_pendiente:
+            self._fin_arranque_pendiente = False
+            self._tx(P.ORDEN_VIGIA_FIN_ARRANQUE)
+
+    def _rechazo_de_la_vigia(self, codigo: int) -> bool:
+        """True si la pantalla rechazo una orden de la vigia (el .tft no trae ``va_vivo`` / ``va_arranque``): a la tercera se deja de
+        mandarla, con un solo error en el registro, en vez de repetirlo cada segundo."""
+        if not self._ultimas_ordenes or not self._ultimas_ordenes[-1].startswith("principal.va_") or codigo not in (0x02, 0x1A):
+            return False
+        if not self._vigia_activa:
+            return True                                      # la respuesta tardia de una orden que ya se dejo de mandar: no se repite el error
+        self._vigia_rechazos += 1
+        if self._vigia_rechazos >= RECHAZOS_PARA_DESACTIVAR_VIGIA:
+            self._vigia_activa = False
+            REGISTRO.error("la pantalla no tiene las variables de la vigia (principal.va_vivo y va_arranque): no se manda la señal de "
+                           "vida hasta que se cargue un .tft que las incluya")
+            return True
+        return False
+
+    def _avisar_reinicio_de_pantalla(self, ahora: float) -> None:
+        """La pantalla se reinicio sola con g2-ui en marcha (solo llega ese aviso si nadie la apago a proposito): se cuentan los de los
+        ultimos 10 min y se le avisa al nucleo, que lo deja como evento (y como alerta si son 5 o mas). Un fallo al avisar no
+        detiene nada."""
+        self._reinicios_pantalla = [t for t in self._reinicios_pantalla if ahora - t < VENTANA_REINICIOS_PANTALLA_S] + [ahora]
+        try:
+            self.cliente.enviar_orden("pantalla_reiniciada", actor="g2-ui", reinicios_10min=len(self._reinicios_pantalla))
+        except OSError as error:
+            REGISTRO.warning("no se pudo avisar al nucleo del reinicio de la pantalla: %s", error)
 
     # ------------------------------------------------------------------ grafica en tiempo (D-043)
     def _muestrear(self, ahora: float, estado: dict | None) -> None:

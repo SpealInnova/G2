@@ -37,6 +37,17 @@ def texto_calibracion(c: dict, zona: str) -> str:
                    + (f" · cero {c['offset_pct']:+g} %" if c["offset_pct"] is not None else ""))
     return f"Sensor {c['sensor_id']}: {c['tipo']} el {f} {h[:5]}{detalle}{' · ' + c['actor'] if c['actor'] else ''}"
 
+
+def texto_ambiente(ambiente: dict[str, dict]) -> str:
+    """Una linea de la hoja de resumen: temperatura y humedad del rango (minimo, maximo y promedio)."""
+    partes = []
+    for magnitud, rotulo, unidad in (("temperatura_c", "temperatura", "°C"), ("humedad_pct", "humedad", "%")):
+        e = ambiente.get(magnitud)
+        if e:
+            partes.append(f"{rotulo} {e['min']:.1f} a {e['max']:.1f} {unidad} (prom. {e['prom']:.1f})")
+    return " · ".join(partes) or "sin lecturas en el rango"
+
+
 class ErrorReporte(Exception):
     """No se pudo dibujar o cifrar el reporte; el mensaje se puede mostrar en la pantalla."""
 
@@ -216,6 +227,8 @@ class _Dibujante:
         for n in (1, 2):
             if r["con_alerta"][n]:
                 renglones.append((f"Alertas S{n}", f"{r['con_alerta'][n]} filas con alarma de oxígeno abierta (en rojo)", ROJO))
+        if d.ambiente:
+            renglones.append(("Ambiente", texto_ambiente(d.ambiente), NEGRO))
         renglones.append(("Alarmas del rango", f"{len(d.alarmas)} (detalle al final)", ROJO if d.alarmas else NEGRO))
         if d.cambios_sensor:
             renglones.append(("Estado de sensores", f"{len(d.cambios_sensor)} cambios (apagados, encendidos o sin señal; detalle al final)", NEGRO))
